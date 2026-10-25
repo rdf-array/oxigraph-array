@@ -189,7 +189,7 @@ fn write_csv_sequence_element(output: &mut String, term: TermRef<'_>) {
             }
             output.push(')');
         }
-        term => write_csv_term(output, term),
+        other => write_csv_term(output, other),
     }
 }
 

@@ -883,7 +883,9 @@ fn has_sequence_position(pattern: &TermPattern) -> bool {
         TermPattern::SequencePosition { .. } => true,
         TermPattern::Sequence(elements) => elements.iter().any(has_sequence_position),
         #[cfg(feature = "sparql-12")]
-        TermPattern::Triple(t) => has_sequence_position(&t.subject) || has_sequence_position(&t.object),
+        TermPattern::Triple(t) => {
+            has_sequence_position(&t.subject) || has_sequence_position(&t.object)
+        }
         _ => false,
     }
 }

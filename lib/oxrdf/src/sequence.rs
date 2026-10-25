@@ -130,7 +130,7 @@ impl<'a> IntoIterator for &'a Sequence {
 }
 
 #[cfg(test)]
-#[expect(clippy::panic_in_result_fn)]
+#[expect(clippy::panic_in_result_fn, clippy::unwrap_used)]
 mod tests {
     use crate::*;
     use std::str::FromStr;
@@ -138,10 +138,7 @@ mod tests {
     #[test]
     fn sequence_display_and_parse() -> Result<(), TermParseError> {
         let t = Term::from_str("( 1 ( \"a\" _:b ) <http://ex/c> () )")?;
-        let Term::Sequence(s) = &t else {
-            panic!("not a sequence: {t}")
-        };
-        assert_eq!(s.len(), 4);
+        assert!(matches!(&t, Term::Sequence(s) if s.len() == 4), "{t}");
         assert_eq!(
             t.to_string(),
             "(\"1\"^^<http://www.w3.org/2001/XMLSchema#integer> (\"a\" _:b) <http://ex/c> ())"
@@ -160,15 +157,18 @@ mod tests {
         let t = Triple::from_str("( <http://ex/a> ) <http://ex/p> ( ) .")?;
         assert!(t.subject.is_sequence());
         assert!(t.object.is_sequence());
-        assert!(Quad::from_str("<http://ex/a> <http://ex/p> <http://ex/o> ( ) .").is_err());
+        Quad::from_str("<http://ex/a> <http://ex/p> <http://ex/o> ( ) .").unwrap_err();
         Ok(())
     }
 
     #[test]
-    fn dataset_with_sequences() -> Result<(), TermParseError> {
+    fn dataset_with_sequences() {
         let p = NamedNode::new_unchecked("http://ex/p");
         let mut d = Dataset::new();
-        let s1 = Sequence::new([Term::from(BlankNode::new_unchecked("x")), Literal::from(1).into()]);
+        let s1 = Sequence::new([
+            Term::from(BlankNode::new_unchecked("x")),
+            Literal::from(1).into(),
+        ]);
         let s2 = Sequence::new([Term::from(s1.clone())]);
         d.insert(QuadRef::new(&s1, &p, &s2, GraphNameRef::DefaultGraph));
         d.insert(QuadRef::new(&s2, &p, &s1, GraphNameRef::DefaultGraph));
@@ -177,7 +177,10 @@ mod tests {
         assert_eq!(d.quads_for_object(&s1).count(), 1);
         assert_eq!(d.quads_for_subject(&Sequence::empty()).count(), 0);
         let mut e = Dataset::new();
-        let t1 = Sequence::new([Term::from(BlankNode::new_unchecked("y")), Literal::from(1).into()]);
+        let t1 = Sequence::new([
+            Term::from(BlankNode::new_unchecked("y")),
+            Literal::from(1).into(),
+        ]);
         let t2 = Sequence::new([Term::from(t1.clone())]);
         e.insert(QuadRef::new(&t1, &p, &t2, GraphNameRef::DefaultGraph));
         e.insert(QuadRef::new(&t2, &p, &t1, GraphNameRef::DefaultGraph));
@@ -185,6 +188,5 @@ mod tests {
         d.canonicalize(dataset::CanonicalizationAlgorithm::Unstable);
         e.canonicalize(dataset::CanonicalizationAlgorithm::Unstable);
         assert_eq!(d, e);
-        Ok(())
     }
 }

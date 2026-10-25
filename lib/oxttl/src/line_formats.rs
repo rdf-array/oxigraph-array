@@ -461,10 +461,12 @@ impl RuleRecognizer for NQuadsRecognizer {
                 self.emit_quad(results, GraphName::DefaultGraph);
                 errors.push("Triples must be followed by a dot".into())
             }
-            [NQuadsState::ExpectLiteralAnnotationOrGraphNameOrDot {
-                value,
-                in_sequence: false,
-            }] => {
+            [
+                NQuadsState::ExpectLiteralAnnotationOrGraphNameOrDot {
+                    value,
+                    in_sequence: false,
+                },
+            ] => {
                 self.objects.push(Literal::new_simple_literal(value).into());
                 self.emit_quad(results, GraphName::DefaultGraph);
                 errors.push("Triples must be followed by a dot".into())

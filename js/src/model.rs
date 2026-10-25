@@ -19,6 +19,10 @@ const TYPESCRIPT_CUSTOM_SECTION: &str = r###"
  */ 
 export function literal(value: string | undefined, languageOrDataType?: string | NamedNode | {language: string, direction?: "ltr" | "rtl"}): Literal;
 export function quad(subject: Quad_Subject, predicate: Quad_Predicate, object: Quad_Object, graph?: Quad_Graph): Quad;
+/**
+ * rdf-array: a sequence of terms, itself a term
+ */
+export function sequence(elements: Term[]): Sequence;
 
 /**
  * RDF/JS-compatible BlankNode term
@@ -102,17 +106,30 @@ export class Quad implements BaseQuad {
 }
 
 /**
- * Typedefs copied from the RDF/JS reference types (https://github.com/rdfjs/types)
+ * rdf-array: a sequence of terms (rdf-array/types-array's Sequence). A Turtle collection ( … ) is one
+ * sequence, and () is the empty sequence, not rdf:nil. The value is the N-Triples-array spelling.
+ */
+export class Sequence {
+    readonly termType: "Sequence";
+    readonly value: string;
+    readonly elements: Term[];
+
+    equals(other: Term | null | undefined): boolean;
+    toString(): string;
+}
+
+/**
+ * Typedefs copied from the RDF/JS reference types (https://github.com/rdfjs/types), with rdf-array's Sequence
  */
 export type Quad_Graph = DefaultGraph | NamedNode | BlankNode | Variable;
-export type Quad_Object = NamedNode | Literal | BlankNode | Quad | Variable;
+export type Quad_Object = NamedNode | Literal | BlankNode | Quad | Sequence | Variable;
 export type Quad_Predicate = NamedNode | Variable;
-export type Quad_Subject = NamedNode | BlankNode | Quad | Variable;
+export type Quad_Subject = NamedNode | BlankNode | Quad | Sequence | Variable;
 
 /**
  * RDF/JS-compatible Term typedef. See note above re: BaseQuad.
  */
-export type Term = NamedNode | BlankNode | Literal | Variable | DefaultGraph | BaseQuad;
+export type Term = NamedNode | BlankNode | Literal | Variable | DefaultGraph | BaseQuad | Sequence;
 
 /**
  * RDF/JS-compatible Variable term
@@ -226,6 +243,12 @@ pub fn quad(
     Ok(FROM_JS
         .with(|c| c.to_quad_from_parts(subject, predicate, object, graph))?
         .into())
+}
+
+/// rdf-array: a sequence of terms
+#[wasm_bindgen(js_name = sequence, skip_typescript)]
+pub fn sequence(elements: &JsValue) -> Result<JsSequence, JsValue> {
+    FROM_JS.with(|c| c.to_sequence(elements)).map(Into::into)
 }
 
 #[wasm_bindgen(js_name = fromTerm)]
@@ -599,6 +622,62 @@ impl From<JsQuad> for Triple {
     }
 }
 
+/// rdf-array: the sequence term
+#[wasm_bindgen(js_name = Sequence, skip_typescript)]
+#[derive(Eq, PartialEq, Debug, Clone, Hash)]
+pub struct JsSequence {
+    inner: Sequence,
+}
+
+#[wasm_bindgen(js_class = Sequence)]
+impl JsSequence {
+    #[wasm_bindgen(getter = termType)]
+    pub fn term_type(&self) -> String {
+        "Sequence".to_owned()
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn value(&self) -> String {
+        self.inner.to_string()
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn elements(&self) -> js_sys::Array {
+        self.inner
+            .elements()
+            .iter()
+            .map(|e| JsValue::from(JsTerm::from(e.clone())))
+            .collect()
+    }
+
+    #[wasm_bindgen(js_name = toString)]
+    pub fn to_string(&self) -> String {
+        self.inner.to_string()
+    }
+
+    pub fn equals(&self, other: &JsValue) -> bool {
+        if let Ok(Some(JsTerm::Sequence(other))) =
+            FromJsConverter::default().to_optional_term(other)
+        {
+            self == &other
+        } else {
+            false
+        }
+    }
+}
+
+impl From<Sequence> for JsSequence {
+    fn from(inner: Sequence) -> Self {
+        Self { inner }
+    }
+}
+
+impl From<JsSequence> for Sequence {
+    fn from(sequence: JsSequence) -> Self {
+        sequence.inner
+    }
+}
+
 #[derive(Eq, PartialEq, Debug, Clone, Hash)]
 pub enum JsTerm {
     NamedNode(JsNamedNode),
@@ -607,6 +686,7 @@ pub enum JsTerm {
     DefaultGraph(JsDefaultGraph),
     Variable(JsVariable),
     Quad(JsQuad),
+    Sequence(JsSequence),
 }
 
 impl From<JsTerm> for JsValue {
@@ -618,6 +698,7 @@ impl From<JsTerm> for JsValue {
             JsTerm::DefaultGraph(v) => v.into(),
             JsTerm::Variable(v) => v.into(),
             JsTerm::Quad(v) => v.into(),
+            JsTerm::Sequence(v) => v.into(),
         }
     }
 }
@@ -657,7 +738,14 @@ impl From<Term> for JsTerm {
             Term::Literal(literal) => literal.into(),
             #[cfg(feature = "rdf-12")]
             Term::Triple(node) => node.into(),
+            Term::Sequence(sequence) => Self::Sequence(sequence.into()),
         }
+    }
+}
+
+impl From<Subject> for JsTerm {
+    fn from(node: Subject) -> Self {
+        Term::from(node).into()
     }
 }
 
@@ -715,6 +803,10 @@ impl TryFrom<JsTerm> for NamedNode {
                 variable.inner
             )),
             JsTerm::Quad(quad) => Err(format_err!("The quad {} is not a named node", quad.inner)),
+            JsTerm::Sequence(sequence) => Err(format_err!(
+                "The sequence {} is not a named node",
+                sequence.inner
+            )),
         }
     }
 }
@@ -741,6 +833,21 @@ impl TryFrom<JsTerm> for NamedOrBlankNode {
                 "The quad {} is not a possible named or blank node term",
                 quad.inner
             )),
+            JsTerm::Sequence(sequence) => Err(format_err!(
+                "The sequence {} is not a possible named or blank node term",
+                sequence.inner
+            )),
+        }
+    }
+}
+
+impl TryFrom<JsTerm> for Subject {
+    type Error = JsValue;
+
+    fn try_from(value: JsTerm) -> Result<Self, Self::Error> {
+        match value {
+            JsTerm::Sequence(sequence) => Ok(sequence.inner.into()),
+            other => Ok(NamedOrBlankNode::try_from(other)?.into()),
         }
     }
 }
@@ -767,6 +874,7 @@ impl TryFrom<JsTerm> for Term {
                 "The quad {} is not a possible RDF term",
                 quad.inner
             )),
+            JsTerm::Sequence(sequence) => Ok(sequence.inner.into()),
         }
     }
 }
@@ -791,6 +899,10 @@ impl TryFrom<JsTerm> for GraphName {
                 "The quad {} is not a possible RDF term",
                 quad.inner
             )),
+            JsTerm::Sequence(sequence) => Err(format_err!(
+                "The sequence {} is not a possible graph name",
+                sequence.inner
+            )),
         }
     }
 }
@@ -806,6 +918,7 @@ pub struct FromJsConverter {
     predicate: JsValue,
     object: JsValue,
     graph: JsValue,
+    elements: JsValue,
 }
 
 impl Default for FromJsConverter {
@@ -821,6 +934,7 @@ impl Default for FromJsConverter {
             predicate: JsValue::from_str("predicate"),
             object: JsValue::from_str("object"),
             graph: JsValue::from_str("graph"),
+            elements: JsValue::from_str("elements"),
         }
     }
 }
@@ -884,6 +998,10 @@ impl FromJsConverter {
                 .map_err(JsError::from)?
                 .into()),
                 "Quad" => Ok(self.to_quad(value)?.into()),
+                "Sequence" => Ok(JsTerm::Sequence(
+                    self.to_sequence(&Reflect::get(value, &self.elements)?)?
+                        .into(),
+                )),
                 _ => Err(format_err!(
                     "The termType {term_type} is not supported by Oxigraph"
                 )),
@@ -903,6 +1021,18 @@ impl FromJsConverter {
         } else {
             Err(format_err!("The object termType field should be a string"))
         }
+    }
+
+    /// rdf-array: a JS array of terms as a sequence
+    pub fn to_sequence(&self, elements: &JsValue) -> Result<Sequence, JsValue> {
+        if !js_sys::Array::is_array(elements) {
+            return Err(format_err!("The elements of a sequence should be an array"));
+        }
+        js_sys::Array::from(elements)
+            .iter()
+            .map(|e| Term::try_from(self.to_term(&e)?))
+            .collect::<Result<Vec<_>, _>>()
+            .map(Sequence::from)
     }
 
     pub fn to_optional_term(&self, value: &JsValue) -> Result<Option<JsTerm>, JsValue> {
@@ -930,7 +1060,7 @@ impl FromJsConverter {
         graph_name: &JsValue,
     ) -> Result<Quad, JsValue> {
         Ok(Quad {
-            subject: NamedOrBlankNode::try_from(self.to_term(subject)?)?,
+            subject: Subject::try_from(self.to_term(subject)?)?,
             predicate: NamedNode::try_from(self.to_term(predicate)?)?,
             object: Term::try_from(self.to_term(object)?)?,
             graph_name: if graph_name.is_undefined() {

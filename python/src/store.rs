@@ -178,7 +178,7 @@ impl PyStore {
     /// Looks for the quads matching a given pattern.
     ///
     /// :param subject: the quad subject or :py:const:`None` to match everything.
-    /// :type subject: NamedNode or BlankNode or Triple or None
+    /// :type subject: NamedNode or BlankNode or Sequence or None
     /// :param predicate: the quad predicate or :py:const:`None` to match everything.
     /// :type predicate: NamedNode or None
     /// :param object: the quad object or :py:const:`None` to match everything.
@@ -197,7 +197,7 @@ impl PyStore {
     #[pyo3(signature = (subject, predicate, object, graph_name = None))]
     fn quads_for_pattern(
         &self,
-        subject: Option<PyNamedOrBlankNodeRef<'_>>,
+        subject: Option<PySubjectRef<'_>>,
         predicate: Option<PyNamedNodeRef<'_>>,
         object: Option<PyTermRef<'_>>,
         graph_name: Option<PyGraphNameRef<'_>>,

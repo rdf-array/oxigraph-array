@@ -16,6 +16,9 @@ pub fn read_file(url: &str) -> Result<impl Read + 'static> {
                 "https://github.com/oxigraph/oxigraph/tests/",
                 "oxigraph-tests/",
             )
+        } else if url.starts_with("https://rdf-array.github.io/") {
+            // rdf-array: the contrib suites (rdf-tests-contrib, json-ld-api-contrib) are submodules here
+            url.replace("https://rdf-array.github.io/", "")
         } else if url.starts_with("http://drobilla.net/sw/serd/test/") {
             url.replace("http://drobilla.net/sw/serd/test/", "serd-tests/")
         } else {

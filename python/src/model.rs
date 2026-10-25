@@ -658,6 +658,34 @@ impl From<NamedOrBlankNode> for PyNamedOrBlankNode {
     }
 }
 
+/// rdf-array: the subject of a triple, an IRI, a blank node or a sequence
+#[derive(FromPyObject, IntoPyObject)]
+pub enum PySubject {
+    NamedNode(PyNamedNode),
+    BlankNode(PyBlankNode),
+    Sequence(PySequence),
+}
+
+impl From<PySubject> for Subject {
+    fn from(node: PySubject) -> Self {
+        match node {
+            PySubject::NamedNode(node) => node.inner.into(),
+            PySubject::BlankNode(node) => node.inner.into(),
+            PySubject::Sequence(node) => node.inner.into(),
+        }
+    }
+}
+
+impl From<Subject> for PySubject {
+    fn from(node: Subject) -> Self {
+        match node {
+            Subject::NamedNode(node) => Self::NamedNode(node.into()),
+            Subject::BlankNode(node) => Self::BlankNode(node.into()),
+            Subject::Sequence(node) => Self::Sequence(node.into()),
+        }
+    }
+}
+
 #[derive(FromPyObject, IntoPyObject)]
 pub enum PyTerm {
     NamedNode(PyNamedNode),
@@ -665,6 +693,7 @@ pub enum PyTerm {
     Literal(PyLiteral),
     #[cfg(feature = "rdf-12")]
     Triple(PyTriple),
+    Sequence(PySequence),
 }
 
 impl From<PyTerm> for Term {
@@ -675,6 +704,7 @@ impl From<PyTerm> for Term {
             PyTerm::Literal(literal) => literal.into(),
             #[cfg(feature = "rdf-12")]
             PyTerm::Triple(triple) => triple.into(),
+            PyTerm::Sequence(sequence) => sequence.inner.into(),
         }
     }
 }
@@ -687,18 +717,136 @@ impl From<Term> for PyTerm {
             Term::Literal(literal) => Self::Literal(literal.into()),
             #[cfg(feature = "rdf-12")]
             Term::Triple(triple) => Self::Triple(triple.as_ref().clone().into()),
+            Term::Sequence(sequence) => Self::Sequence(sequence.into()),
         }
+    }
+}
+
+/// An rdf-array sequence: an ordered list of terms that is itself a term. A Turtle collection
+/// ``( … )`` is one sequence, and ``()`` is the empty sequence, not ``rdf:nil``.
+///
+/// :param elements: the elements of the sequence.
+/// :type elements: collections.abc.Sequence[NamedNode or BlankNode or Literal or Triple or Sequence] or None, optional
+///
+/// The :py:class:`str` function provides a serialization compatible with N-Triples-array:
+///
+/// >>> str(Sequence([Literal('1'), NamedNode('http://example.com'), Sequence()]))
+/// '("1" <http://example.com> ())'
+///
+/// A sequence is a Python sequence of its elements:
+///
+/// >>> len(Sequence([Literal('1'), Literal('2')]))
+/// 2
+/// >>> Sequence([Literal('1'), Literal('2')])[-1]
+/// <Literal value=2 datatype=<NamedNode value=http://www.w3.org/2001/XMLSchema#string>>
+#[pyclass(
+    frozen,
+    sequence,
+    name = "Sequence",
+    module = "pyoxigraph",
+    eq,
+    hash,
+    from_py_object
+)]
+#[derive(Eq, PartialEq, Debug, Clone, Hash)]
+pub struct PySequence {
+    inner: Sequence,
+}
+
+impl From<Sequence> for PySequence {
+    fn from(inner: Sequence) -> Self {
+        Self { inner }
+    }
+}
+
+impl From<PySequence> for Sequence {
+    fn from(sequence: PySequence) -> Self {
+        sequence.inner
+    }
+}
+
+#[pymethods]
+impl PySequence {
+    #[new]
+    #[pyo3(signature = (elements = None))]
+    fn new(elements: Option<Vec<PyTerm>>) -> Self {
+        Sequence::new(elements.unwrap_or_default().into_iter().map(Term::from)).into()
+    }
+
+    /// :return: the elements of the sequence.
+    /// :rtype: list[NamedNode or BlankNode or Literal or Triple or Sequence]
+    ///
+    /// >>> Sequence([NamedNode('http://example.com')]).elements
+    /// [<NamedNode value=http://example.com>]
+    #[getter]
+    fn elements(&self) -> Vec<PyTerm> {
+        self.inner
+            .elements()
+            .iter()
+            .cloned()
+            .map(PyTerm::from)
+            .collect()
+    }
+
+    fn __str__(&self) -> String {
+        self.inner.to_string()
+    }
+
+    fn __repr__(&self) -> String {
+        let mut buffer = String::new();
+        sequence_repr(&self.inner, &mut buffer);
+        buffer
+    }
+
+    fn __len__(&self) -> usize {
+        self.inner.len()
+    }
+
+    fn __getitem__(&self, index: isize) -> PyResult<PyTerm> {
+        let len = self.inner.len();
+        let index = if index < 0 {
+            len.checked_sub(index.unsigned_abs())
+        } else {
+            Some(index.unsigned_abs())
+        };
+        index
+            .and_then(|i| self.inner.elements().get(i))
+            .map(|e| e.clone().into())
+            .ok_or_else(|| PyIndexError::new_err("sequence index out of range"))
+    }
+
+    fn __iter__(&self) -> TripleComponentsIter {
+        TripleComponentsIter {
+            inner: self.inner.elements().to_vec().into_iter(),
+        }
+    }
+
+    /// :rtype: typing.Any
+    fn __getnewargs__(&self) -> (Vec<PyTerm>,) {
+        (self.elements(),)
+    }
+
+    /// :rtype: Sequence
+    fn __copy__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    /// :type memo: typing.Any
+    /// :rtype: Sequence
+    #[expect(unused_variables)]
+    fn __deepcopy__<'a>(slf: PyRef<'a, Self>, memo: &'_ Bound<'_, PyAny>) -> PyRef<'a, Self> {
+        slf
     }
 }
 
 /// An RDF `triple <https://www.w3.org/TR/rdf11-concepts/#dfn-rdf-triple>`_.
 ///
 /// :param subject: the triple subject.
-/// :type subject: NamedNode or BlankNode or Triple
+/// :type subject: NamedNode or BlankNode or Sequence
 /// :param predicate: the triple predicate.
 /// :type predicate: NamedNode
 /// :param object: the triple object.
-/// :type object: NamedNode or BlankNode or Literal or Triple
+/// :type object: NamedNode or BlankNode or Literal or Triple or Sequence
 ///
 /// The :py:class:`str` function provides a serialization compatible with NTriples, Turtle, and SPARQL:
 ///
@@ -750,17 +898,17 @@ impl From<PyTriple> for Term {
 #[pymethods]
 impl PyTriple {
     #[new]
-    fn new(subject: PyNamedOrBlankNode, predicate: PyNamedNode, object: PyTerm) -> Self {
-        Triple::new(subject, predicate, object).into()
+    fn new(subject: PySubject, predicate: PyNamedNode, object: PyTerm) -> Self {
+        Triple::new(Subject::from(subject), predicate, object).into()
     }
 
     /// :return: the triple subject.
-    /// :rtype: NamedNode or BlankNode or Triple
+    /// :rtype: NamedNode or BlankNode or Sequence
     ///
     /// >>> Triple(NamedNode('http://example.com'), NamedNode('http://example.com/p'), Literal('1')).subject
     /// <NamedNode value=http://example.com>
     #[getter]
-    fn subject(&self) -> PyNamedOrBlankNode {
+    fn subject(&self) -> PySubject {
         self.inner.subject.clone().into()
     }
 
@@ -775,7 +923,7 @@ impl PyTriple {
     }
 
     /// :return: the triple object.
-    /// :rtype: NamedNode or BlankNode or Literal or Triple
+    /// :rtype: NamedNode or BlankNode or Literal or Triple or Sequence
     ///
     /// >>> Triple(NamedNode('http://example.com'), NamedNode('http://example.com/p'), Literal('1')).object
     /// <Literal value=1 datatype=<NamedNode value=http://www.w3.org/2001/XMLSchema#string>>
@@ -819,7 +967,7 @@ impl PyTriple {
     }
 
     /// :rtype: typing.Any
-    fn __getnewargs__(&self) -> (PyNamedOrBlankNode, PyNamedNode, PyTerm) {
+    fn __getnewargs__(&self) -> (PySubject, PyNamedNode, PyTerm) {
         (self.subject(), self.predicate(), self.object())
     }
 
@@ -872,11 +1020,11 @@ impl From<GraphName> for PyGraphName {
 /// in a `RDF dataset <https://www.w3.org/TR/rdf11-concepts/#dfn-rdf-dataset>`_.
 ///
 /// :param subject: the quad subject.
-/// :type subject: NamedNode or BlankNode or Triple
+/// :type subject: NamedNode or BlankNode or Sequence
 /// :param predicate: the quad predicate.
 /// :type predicate: NamedNode
 /// :param object: the quad object.
-/// :type object: NamedNode or BlankNode or Literal or Triple
+/// :type object: NamedNode or BlankNode or Literal or Triple or Sequence
 /// :param graph_name: the quad graph name. If not present, the default graph is assumed.
 /// :type graph_name: NamedNode or BlankNode or DefaultGraph or None, optional
 ///
@@ -928,13 +1076,13 @@ impl PyQuad {
     #[new]
     #[pyo3(signature = (subject, predicate, object, graph_name = None))]
     fn new(
-        subject: PyNamedOrBlankNode,
+        subject: PySubject,
         predicate: PyNamedNode,
         object: PyTerm,
         graph_name: Option<PyGraphName>,
     ) -> Self {
         Quad::new(
-            subject,
+            Subject::from(subject),
             predicate,
             object,
             graph_name.unwrap_or(PyGraphName::DefaultGraph(PyDefaultGraph {})),
@@ -943,12 +1091,12 @@ impl PyQuad {
     }
 
     /// :return: the quad subject.
-    /// :rtype: NamedNode or BlankNode or Triple
+    /// :rtype: NamedNode or BlankNode or Sequence
     ///
     /// >>> Quad(NamedNode('http://example.com'), NamedNode('http://example.com/p'), Literal('1'), NamedNode('http://example.com/g')).subject
     /// <NamedNode value=http://example.com>
     #[getter]
-    fn subject(&self) -> PyNamedOrBlankNode {
+    fn subject(&self) -> PySubject {
         self.inner.subject.clone().into()
     }
 
@@ -963,7 +1111,7 @@ impl PyQuad {
     }
 
     /// :return: the quad object.
-    /// :rtype: NamedNode or BlankNode or Literal or Triple
+    /// :rtype: NamedNode or BlankNode or Literal or Triple or Sequence
     ///
     /// >>> Quad(NamedNode('http://example.com'), NamedNode('http://example.com/p'), Literal('1'), NamedNode('http://example.com/g')).object
     /// <Literal value=1 datatype=<NamedNode value=http://www.w3.org/2001/XMLSchema#string>>
@@ -1016,7 +1164,7 @@ impl PyQuad {
 
     fn __getitem__<'a>(&self, input: usize, py: Python<'a>) -> PyResult<Bound<'a, PyAny>> {
         match input {
-            0 => PyNamedOrBlankNode::from(self.inner.subject.clone()).into_bound_py_any(py),
+            0 => PySubject::from(self.inner.subject.clone()).into_bound_py_any(py),
             1 => PyNamedNode::from(self.inner.predicate.clone()).into_bound_py_any(py),
             2 => PyTerm::from(self.inner.object.clone()).into_bound_py_any(py),
             3 => PyGraphName::from(self.inner.graph_name.clone()).into_bound_py_any(py),
@@ -1041,7 +1189,7 @@ impl PyQuad {
     }
 
     /// :rtype: typing.Any
-    fn __getnewargs__(&self) -> (PyNamedOrBlankNode, PyNamedNode, PyTerm, PyGraphName) {
+    fn __getnewargs__(&self) -> (PySubject, PyNamedNode, PyTerm, PyGraphName) {
         (
             self.subject(),
             self.predicate(),
@@ -1183,6 +1331,24 @@ impl<'a> From<&'a PyNamedOrBlankNodeRef<'a>> for NamedOrBlankNodeRef<'a> {
     }
 }
 
+/// rdf-array: a subject to look for, an IRI, a blank node or a sequence
+#[derive(FromPyObject)]
+pub enum PySubjectRef<'a> {
+    NamedNode(PyRef<'a, PyNamedNode>),
+    BlankNode(PyRef<'a, PyBlankNode>),
+    Sequence(PyRef<'a, PySequence>),
+}
+
+impl<'a> From<&'a PySubjectRef<'a>> for SubjectRef<'a> {
+    fn from(value: &'a PySubjectRef<'a>) -> Self {
+        match value {
+            PySubjectRef::NamedNode(value) => value.inner.as_ref().into(),
+            PySubjectRef::BlankNode(value) => value.inner.as_ref().into(),
+            PySubjectRef::Sequence(value) => (&value.inner).into(),
+        }
+    }
+}
+
 #[derive(FromPyObject)]
 pub enum PyTermRef<'a> {
     NamedNode(PyRef<'a, PyNamedNode>),
@@ -1190,6 +1356,7 @@ pub enum PyTermRef<'a> {
     Literal(PyRef<'a, PyLiteral>),
     #[cfg(feature = "rdf-12")]
     Triple(PyRef<'a, PyTriple>),
+    Sequence(PyRef<'a, PySequence>),
 }
 
 impl<'a> From<&'a PyTermRef<'a>> for TermRef<'a> {
@@ -1200,6 +1367,7 @@ impl<'a> From<&'a PyTermRef<'a>> for TermRef<'a> {
             PyTermRef::Literal(value) => value.inner.as_ref().into(),
             #[cfg(feature = "rdf-12")]
             PyTermRef::Triple(value) => (&value.inner).into(),
+            PyTermRef::Sequence(value) => (&value.inner).into(),
         }
     }
 }
@@ -1261,7 +1429,19 @@ pub fn term_repr(term: TermRef<'_>, buffer: &mut String) {
         TermRef::Literal(literal) => literal_repr(literal, buffer),
         #[cfg(feature = "rdf-12")]
         TermRef::Triple(triple) => triple_repr(triple.as_ref(), buffer),
+        TermRef::Sequence(sequence) => sequence_repr(sequence, buffer),
     }
+}
+
+fn sequence_repr(sequence: &Sequence, buffer: &mut String) {
+    buffer.push_str("<Sequence elements=[");
+    for (i, element) in sequence.iter().enumerate() {
+        if i > 0 {
+            buffer.push_str(", ");
+        }
+        term_repr(element, buffer);
+    }
+    buffer.push_str("]>");
 }
 
 fn graph_name_repr(term: GraphNameRef<'_>, buffer: &mut String) {

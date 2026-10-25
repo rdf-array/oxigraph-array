@@ -1233,9 +1233,9 @@ impl JsonInnerTermReader {
                     self.state = JsonInnerTermReaderState::Middle;
                     Ok(None)
                 }
-                event => {
+                first => {
                     let mut reader = Box::<JsonInnerTermReader>::default();
-                    reader.read_event(event)?;
+                    reader.read_event(first)?;
                     self.state = JsonInnerTermReaderState::Element(reader);
                     Ok(None)
                 }

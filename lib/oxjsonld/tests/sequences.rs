@@ -1,4 +1,5 @@
 //! rdf-array: `@list` is a sequence term, and a sequence is written as `@list`.
+#![cfg(test)]
 #![expect(clippy::unwrap_used)]
 
 use oxjsonld::{JsonLdParser, JsonLdSerializer};
@@ -42,9 +43,7 @@ fn list_is_a_sequence() {
 
 #[test]
 fn list_with_a_node() {
-    let quads = parse(
-        r#"{"@id": "http://ex/s", "http://ex/p": {"@list": [{"http://ex/q": 1}]}}"#,
-    );
+    let quads = parse(r#"{"@id": "http://ex/s", "http://ex/p": {"@list": [{"http://ex/q": 1}]}}"#);
     assert_eq!(quads.len(), 2, "{quads:?}");
     let inner = quads.iter().find(|q| q.predicate == ex("q")).unwrap();
     let outer = quads.iter().find(|q| q.predicate == ex("p")).unwrap();

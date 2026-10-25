@@ -471,7 +471,12 @@ impl<'a> TryFrom<TermRef<'a>> for SubjectRef<'a> {
             TermRef::NamedNode(term) => Ok(Self::NamedNode(term)),
             TermRef::BlankNode(term) => Ok(Self::BlankNode(term)),
             TermRef::Sequence(term) => Ok(Self::Sequence(term)),
-            _ => Err(TryFromTermError {
+            TermRef::Literal(_) => Err(TryFromTermError {
+                term: term.into_owned(),
+                target: "Subject",
+            }),
+            #[cfg(feature = "rdf-12")]
+            TermRef::Triple(_) => Err(TryFromTermError {
                 term: term.into_owned(),
                 target: "Subject",
             }),

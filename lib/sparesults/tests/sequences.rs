@@ -1,4 +1,5 @@
 //! rdf-array: sequence bindings in every results format, against rdf-tests-contrib's sparql/results fixtures.
+#![cfg(test)]
 #![expect(clippy::unwrap_used, clippy::panic)]
 
 use oxrdf::{Literal, NamedNode, Sequence, Term, Variable};
@@ -16,7 +17,10 @@ fn int(i: i64) -> Term {
 
 fn expected() -> Vec<(Term, Term)> {
     vec![
-        (ex("w"), Literal::new_simple_literal("not a sequence").into()),
+        (
+            ex("w"),
+            Literal::new_simple_literal("not a sequence").into(),
+        ),
         (ex("x"), Sequence::new([int(1), int(2), int(3)]).into()),
         (
             ex("y"),
@@ -27,9 +31,10 @@ fn expected() -> Vec<(Term, Term)> {
 }
 
 fn parse(format: QueryResultsFormat, data: &str) -> Vec<(Term, Term)> {
-    let ReaderQueryResultsParserOutput::Solutions(solutions) = QueryResultsParser::from_format(format)
-        .for_reader(data.as_bytes())
-        .unwrap()
+    let ReaderQueryResultsParserOutput::Solutions(solutions) =
+        QueryResultsParser::from_format(format)
+            .for_reader(data.as_bytes())
+            .unwrap()
     else {
         panic!("not solutions")
     };
@@ -48,7 +53,10 @@ fn serialize(format: QueryResultsFormat) -> String {
         .unwrap();
     for (s, seq) in expected() {
         serializer
-            .serialize([(variables[0].as_ref(), s.as_ref()), (variables[1].as_ref(), seq.as_ref())])
+            .serialize([
+                (variables[0].as_ref(), s.as_ref()),
+                (variables[1].as_ref(), seq.as_ref()),
+            ])
             .unwrap();
     }
     String::from_utf8(serializer.finish().unwrap()).unwrap()
@@ -56,20 +64,50 @@ fn serialize(format: QueryResultsFormat) -> String {
 
 #[test]
 fn json() {
-    assert_eq!(parse(QueryResultsFormat::Json, include_str!("sequences/sequences.srj")), expected());
-    assert_eq!(parse(QueryResultsFormat::Json, &serialize(QueryResultsFormat::Json)), expected());
+    assert_eq!(
+        parse(
+            QueryResultsFormat::Json,
+            include_str!("sequences/sequences.srj")
+        ),
+        expected()
+    );
+    assert_eq!(
+        parse(
+            QueryResultsFormat::Json,
+            &serialize(QueryResultsFormat::Json)
+        ),
+        expected()
+    );
 }
 
 #[test]
 fn xml() {
-    assert_eq!(parse(QueryResultsFormat::Xml, include_str!("sequences/sequences.srx")), expected());
-    assert_eq!(parse(QueryResultsFormat::Xml, &serialize(QueryResultsFormat::Xml)), expected());
+    assert_eq!(
+        parse(
+            QueryResultsFormat::Xml,
+            include_str!("sequences/sequences.srx")
+        ),
+        expected()
+    );
+    assert_eq!(
+        parse(QueryResultsFormat::Xml, &serialize(QueryResultsFormat::Xml)),
+        expected()
+    );
 }
 
 #[test]
 fn tsv() {
-    assert_eq!(parse(QueryResultsFormat::Tsv, include_str!("sequences/sequences.tsv")), expected());
-    assert_eq!(parse(QueryResultsFormat::Tsv, &serialize(QueryResultsFormat::Tsv)), expected());
+    assert_eq!(
+        parse(
+            QueryResultsFormat::Tsv,
+            include_str!("sequences/sequences.tsv")
+        ),
+        expected()
+    );
+    assert_eq!(
+        parse(QueryResultsFormat::Tsv, &serialize(QueryResultsFormat::Tsv)),
+        expected()
+    );
 }
 
 #[test]
@@ -79,4 +117,3 @@ fn csv() {
         include_str!("sequences/sequences.csv")
     );
 }
-

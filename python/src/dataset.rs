@@ -1,4 +1,4 @@
-use crate::model::{PyGraphNameRef, PyNamedNodeRef, PyNamedOrBlankNodeRef, PyQuad, PyTermRef};
+use crate::model::{PyGraphNameRef, PyNamedNodeRef, PyQuad, PySubjectRef, PyTermRef};
 use oxigraph::model::dataset::{CanonicalizationAlgorithm, CanonicalizationHashAlgorithm, Dataset};
 use oxigraph::model::{Quad, QuadRef};
 use pyo3::exceptions::PyKeyError;
@@ -43,7 +43,7 @@ impl PyDataset {
     /// Looks for the quads with the given subject.
     ///
     /// :param subject: the quad subject.
-    /// :type subject: NamedNode or BlankNode or Triple
+    /// :type subject: NamedNode or BlankNode or Sequence
     /// :return: an iterator of the quads.
     /// :rtype: collections.abc.Iterator[Quad]
     ///
@@ -51,7 +51,7 @@ impl PyDataset {
     /// >>> list(store.quads_for_subject(NamedNode('http://example.com')))
     /// [<Quad subject=<NamedNode value=http://example.com> predicate=<NamedNode value=http://example.com/p> object=<Literal value=1 datatype=<NamedNode value=http://www.w3.org/2001/XMLSchema#string>> graph_name=<NamedNode value=http://example.com/g>>]
     #[expect(clippy::needless_pass_by_value)]
-    fn quads_for_subject(&self, subject: PyNamedOrBlankNodeRef<'_>) -> QuadIter {
+    fn quads_for_subject(&self, subject: PySubjectRef<'_>) -> QuadIter {
         QuadIter {
             inner: self
                 .inner

@@ -129,6 +129,12 @@ impl<'a> QueryableDataset<'a> for DatasetView<'a> {
             )
             .ok_or_else(|| CorruptionError::msg("Invalid triple term in the storage"))?
             .into(),
+            EncodedTerm::Sequence(elements) => ExpressionTerm::Sequence(
+                elements
+                    .iter()
+                    .map(|e| self.externalize_expression_term(e.clone()))
+                    .collect::<Result<_, _>>()?,
+            ),
             _ => self.decode_term(&term)?.into(), // No escape
         })
     }
@@ -164,6 +170,12 @@ impl<'a> QueryableDataset<'a> for DatasetView<'a> {
                 predicate: self.internalize_expression_term(t.predicate.into())?,
                 object: self.internalize_expression_term(t.object)?,
             })),
+            ExpressionTerm::Sequence(elements) => EncodedTerm::Sequence(
+                elements
+                    .into_iter()
+                    .map(|e| self.internalize_expression_term(e))
+                    .collect::<Result<_, _>>()?,
+            ),
             _ => self.internalize_term(term.into())?, // No fast path
         })
     }

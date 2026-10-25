@@ -1,4 +1,5 @@
 //! rdf-array: collections are sequence patterns; position patterns and the sequence functions parse.
+#![cfg(test)]
 #![expect(clippy::unwrap_used)]
 
 use spargebra::{Query, SparqlParser};
@@ -30,7 +31,10 @@ fn position_patterns() {
         ("SELECT * { ?s :p ((?e))[2] }", "(seqpos ?e 2)"),
         ("SELECT * { ?s :p ((?e))[?i] }", "(seqpos ?e ?i)"),
         ("SELECT * { ?s :p ((?e))[*] }", "(seqpos ?e *)"),
-        ("SELECT * { ?s :p ((((?e))[1]))[2] }", "(seqpos (seqpos ?e 1) 2)"),
+        (
+            "SELECT * { ?s :p ((((?e))[1]))[2] }",
+            "(seqpos (seqpos ?e 1) 2)",
+        ),
         ("SELECT * { ?s :p ( ( ?e ) ) [ 2 ] }", "(seqpos ?e 2)"),
     ] {
         let parsed = query(q);
@@ -38,7 +42,11 @@ fn position_patterns() {
         assert_eq!(query(&parsed.to_string()), parsed, "{q}");
     }
     // without [ ] it is a nested sequence
-    assert!(query("SELECT * { ?s :p ((?e)) }").to_sse().contains("(seq (seq ?e))"));
+    assert!(
+        query("SELECT * { ?s :p ((?e)) }")
+            .to_sse()
+            .contains("(seq (seq ?e))")
+    );
 }
 
 #[test]
@@ -83,17 +91,19 @@ fn updates() {
         let parsed = SparqlParser::new().parse_update(u).unwrap();
         assert!(!parsed.to_sse().contains("first"), "{}", parsed.to_sse());
         // Display wraps a WHERE clause into a projection, so compare the second round with the first
-        let again = SparqlParser::new().parse_update(&parsed.to_string()).unwrap();
+        let again = SparqlParser::new()
+            .parse_update(&parsed.to_string())
+            .unwrap();
         assert_eq!(
-            SparqlParser::new().parse_update(&again.to_string()).unwrap(),
+            SparqlParser::new()
+                .parse_update(&again.to_string())
+                .unwrap(),
             again
         );
     }
-    assert!(
-        SparqlParser::new()
-            .parse_update("PREFIX : <http://example/> INSERT { ?s :p ((?e))[1] } WHERE {}")
-            .is_err()
-    );
+    SparqlParser::new()
+        .parse_update("PREFIX : <http://example/> INSERT { ?s :p ((?e))[1] } WHERE {}")
+        .unwrap_err();
 }
 
 #[test]
@@ -101,5 +111,10 @@ fn upstream_update_round_trip_adds_a_projection() {
     let parsed = SparqlParser::new()
         .parse_update("PREFIX : <http://example/> DELETE { ?s :p ?o } WHERE { ?s :p ?o }")
         .unwrap();
-    assert_ne!(SparqlParser::new().parse_update(&parsed.to_string()).unwrap(), parsed);
+    assert_ne!(
+        SparqlParser::new()
+            .parse_update(&parsed.to_string())
+            .unwrap(),
+        parsed
+    );
 }

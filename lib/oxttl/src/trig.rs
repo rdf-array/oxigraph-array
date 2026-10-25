@@ -9,8 +9,7 @@ use crate::toolkit::{Parser, ReaderIterator, SliceIterator, TurtleParseError, Tu
 use oxiri::{Iri, IriParseError};
 use oxrdf::vocab::{rdf, xsd};
 use oxrdf::{
-    GraphName, GraphNameRef, LiteralRef, NamedNode, NamedNodeRef, Quad, QuadRef, Subject,
-    TermRef,
+    GraphName, GraphNameRef, LiteralRef, NamedNode, NamedNodeRef, Quad, QuadRef, Subject, TermRef,
 };
 use std::borrow::Cow;
 use std::cmp::Reverse;

@@ -6,7 +6,9 @@ use oxiri::{Iri, IriParseError};
 #[cfg(feature = "rdf-12")]
 use oxrdf::BaseDirection;
 use oxrdf::vocab::xsd;
-use oxrdf::{GraphName, GraphNameRef, NamedNode, NamedOrBlankNodeRef, QuadRef, Subject, SubjectRef, TermRef};
+use oxrdf::{
+    GraphName, GraphNameRef, NamedNode, NamedOrBlankNodeRef, QuadRef, Subject, SubjectRef, TermRef,
+};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;

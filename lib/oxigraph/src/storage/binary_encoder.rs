@@ -52,6 +52,8 @@ const TYPE_DAY_TIME_DURATION_LITERAL: u8 = 44;
 pub const TYPE_STAR_TRIPLE: u8 = 48;
 #[cfg(feature = "rdf-12")]
 const TYPE_TRIPLE: u8 = 49;
+/// rdf-array: a sequence, followed by its number of elements (u32, big endian) and the elements
+const TYPE_SEQUENCE: u8 = 52;
 #[cfg(feature = "rdf-12")]
 const TYPE_LTR_SMALL_SMALL_DIR_LANG_STRING_LITERAL: u8 = 56;
 #[cfg(feature = "rdf-12")]
@@ -522,6 +524,17 @@ impl<R: Read> TermReader for R {
                 predicate: self.read_term()?,
                 object: self.read_term()?,
             }))),
+            TYPE_SEQUENCE => {
+                let mut buffer = [0; 4];
+                self.read_exact(&mut buffer)?;
+                let len = u32::from_be_bytes(buffer);
+                let elements = std::iter::repeat_with(|| self.read_term())
+                    .take(usize::try_from(len).map_err(|_| {
+                        CorruptionError::msg("the sequence is too long for this platform")
+                    })?)
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(EncodedTerm::Sequence(elements.into()))
+            }
             _ => Err(CorruptionError::msg("the term buffer has an invalid type id").into()),
         }
     }
@@ -810,6 +823,17 @@ pub fn write_term(sink: &mut Vec<u8>, term: &EncodedTerm) {
             write_term(sink, &value.subject);
             write_term(sink, &value.predicate);
             write_term(sink, &value.object);
+        }
+        EncodedTerm::Sequence(elements) => {
+            sink.push(TYPE_SEQUENCE);
+            sink.extend_from_slice(
+                &u32::try_from(elements.len())
+                    .unwrap_or(u32::MAX)
+                    .to_be_bytes(),
+            );
+            for element in elements.iter() {
+                write_term(sink, element);
+            }
         }
     }
 }

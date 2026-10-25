@@ -18,6 +18,7 @@ from pyoxigraph import (
     QuerySolutions,
     QueryTriples,
     RdfFormat,
+    Sequence,
     Store,
     Triple,
     Variable,
@@ -466,6 +467,27 @@ class TestStore(unittest.TestCase):
             gc.collect()
             store = Store.read_only(dir)
             self.assertEqual(list(store), [quad])
+
+
+class TestStoreSequences(unittest.TestCase):
+    """rdf-array: sequences in the store"""
+
+    def test_load_query_update(self) -> None:
+        store = Store()
+        store.load(
+            "@prefix : <http://ex/> . :x :p (1 2) . (:a) :q () .",
+            RdfFormat.TURTLE,
+        )
+        self.assertEqual(len(store), 2)
+        seq = Sequence([NamedNode("http://ex/a")])
+        self.assertEqual(len(list(store.quads_for_pattern(seq, None, None))), 1)
+        solutions = list(store.query("SELECT ?e { ?s <http://ex/p> ((?e))[2] }"))
+        self.assertEqual(solutions[0]["e"], Literal("2", datatype=NamedNode("http://www.w3.org/2001/XMLSchema#integer")))
+        store.update("INSERT DATA { <http://ex/y> <http://ex/p> ( <http://ex/b> ) }")
+        self.assertIn(
+            Quad(NamedNode("http://ex/y"), NamedNode("http://ex/p"), Sequence([NamedNode("http://ex/b")])),
+            store,
+        )
 
 
 if __name__ == "__main__":

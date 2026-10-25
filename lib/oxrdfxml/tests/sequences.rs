@@ -1,4 +1,5 @@
 //! rdf-array: rdf:parseType="Collection" is a sequence term, rdf:li stays rdf:li.
+#![cfg(test)]
 #![expect(clippy::unwrap_used)]
 
 use oxrdf::vocab::rdf;
@@ -16,7 +17,8 @@ fn ex(local: &str) -> NamedNode {
     NamedNode::new_unchecked(format!("http://ex/{local}"))
 }
 
-const HEAD: &str = r#"<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:ex="http://ex/">"#;
+const HEAD: &str =
+    r#"<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:ex="http://ex/">"#;
 
 #[test]
 fn collection_is_a_sequence() {
@@ -58,8 +60,16 @@ fn li_is_not_numbered() {
         triples,
         vec![
             Triple::new(ex("s"), rdf::TYPE, rdf::SEQ),
-            Triple::new(ex("s"), NamedNode::new_unchecked("http://www.w3.org/1999/02/22-rdf-syntax-ns#li"), Literal::new_simple_literal("a")),
-            Triple::new(ex("s"), NamedNode::new_unchecked("http://www.w3.org/1999/02/22-rdf-syntax-ns#li"), Literal::new_simple_literal("b")),
+            Triple::new(
+                ex("s"),
+                NamedNode::new_unchecked("http://www.w3.org/1999/02/22-rdf-syntax-ns#li"),
+                Literal::new_simple_literal("a")
+            ),
+            Triple::new(
+                ex("s"),
+                NamedNode::new_unchecked("http://www.w3.org/1999/02/22-rdf-syntax-ns#li"),
+                Literal::new_simple_literal("b")
+            ),
         ]
     );
 }
@@ -82,7 +92,10 @@ fn round_trip() {
         serializer.serialize_triple(t).unwrap();
     }
     let written = String::from_utf8(serializer.finish().unwrap()).unwrap();
-    assert!(written.contains(r#"rdf:parseType="Collection""#), "{written}");
+    assert!(
+        written.contains(r#"rdf:parseType="Collection""#),
+        "{written}"
+    );
     assert_eq!(parse(&written), triples);
 }
 
@@ -90,8 +103,16 @@ fn round_trip() {
 fn not_writable() {
     for t in [
         Triple::new(Sequence::empty(), ex("p"), ex("o")),
-        Triple::new(ex("s"), ex("p"), Sequence::new([Literal::new_simple_literal("a")])),
-        Triple::new(ex("s"), ex("p"), Sequence::new([Term::from(Sequence::empty())])),
+        Triple::new(
+            ex("s"),
+            ex("p"),
+            Sequence::new([Literal::new_simple_literal("a")]),
+        ),
+        Triple::new(
+            ex("s"),
+            ex("p"),
+            Sequence::new([Term::from(Sequence::empty())]),
+        ),
     ] {
         let mut serializer = RdfXmlSerializer::new().for_writer(Vec::new());
         assert!(serializer.serialize_triple(&t).is_err(), "{t}");

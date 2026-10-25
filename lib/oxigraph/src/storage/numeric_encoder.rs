@@ -9,7 +9,6 @@ use std::fmt::Debug;
 use std::hash::{Hash, Hasher};
 use std::mem::discriminant;
 use std::str;
-#[cfg(feature = "rdf-12")]
 use std::sync::Arc;
 
 #[derive(Eq, PartialEq, Debug, Clone, Copy)]
@@ -144,6 +143,8 @@ pub enum EncodedTerm {
     DayTimeDurationLiteral(DayTimeDuration),
     #[cfg(feature = "rdf-12")]
     Triple(Arc<EncodedTriple>),
+    /// rdf-array: a sequence, as its encoded elements
+    Sequence(Arc<[EncodedTerm]>),
 }
 
 impl PartialEq for EncodedTerm {
@@ -340,6 +341,7 @@ impl PartialEq for EncodedTerm {
                 }
                 #[cfg(feature = "rdf-12")]
                 (Self::Triple(a), Self::Triple(b)) => a == b,
+                (Self::Sequence(a), Self::Sequence(b)) => a == b,
                 (_, _) => unreachable!(),
             }
     }
@@ -452,6 +454,7 @@ impl Hash for EncodedTerm {
             Self::DayTimeDurationLiteral(value) => value.hash(state),
             #[cfg(feature = "rdf-12")]
             Self::Triple(value) => value.hash(state),
+            Self::Sequence(value) => value.hash(state),
         }
     }
 }
@@ -631,6 +634,18 @@ impl From<LiteralRef<'_>> for EncodedTerm {
     }
 }
 
+impl From<SubjectRef<'_>> for EncodedTerm {
+    fn from(term: SubjectRef<'_>) -> Self {
+        TermRef::from(term).into()
+    }
+}
+
+impl From<&Sequence> for EncodedTerm {
+    fn from(sequence: &Sequence) -> Self {
+        Self::Sequence(sequence.iter().map(Into::into).collect())
+    }
+}
+
 impl From<NamedOrBlankNodeRef<'_>> for EncodedTerm {
     fn from(term: NamedOrBlankNodeRef<'_>) -> Self {
         match term {
@@ -648,6 +663,7 @@ impl From<TermRef<'_>> for EncodedTerm {
             TermRef::Literal(literal) => literal.into(),
             #[cfg(feature = "rdf-12")]
             TermRef::Triple(triple) => triple.as_ref().into(),
+            TermRef::Sequence(sequence) => sequence.into(),
         }
     }
 }
@@ -852,6 +868,14 @@ pub fn insert_term<F: FnMut(&StrHash, &str)>(
             );
             insert_term(triple.object.as_ref(), &encoded.object, insert_str);
         }
+        TermRef::Sequence(sequence) => {
+            let EncodedTerm::Sequence(encoded) = encoded else {
+                unreachable!("Invalid sequence encoding: {encoded:?}");
+            };
+            for (element, encoded) in sequence.iter().zip(encoded.iter()) {
+                insert_term(element, encoded, insert_str);
+            }
+        }
     }
 }
 
@@ -941,7 +965,18 @@ pub trait Decoder: StrLookup {
                 "A triple has been found instead of a named or blank node",
             )
             .into()),
+            Term::Sequence(_) => Err(CorruptionError::msg(
+                "A sequence has been found instead of a named or blank node",
+            )
+            .into()),
         }
+    }
+
+    /// rdf-array: an IRI, a blank node or a sequence
+    fn decode_subject(&self, encoded: &EncodedTerm) -> Result<Subject, StorageError> {
+        Subject::try_from(self.decode_term(encoded)?).map_err(|_| {
+            CorruptionError::msg("A literal or a triple has been found instead of a subject").into()
+        })
     }
 
     fn decode_named_node(&self, encoded: &EncodedTerm) -> Result<NamedNode, StorageError> {
@@ -958,13 +993,17 @@ pub trait Decoder: StrLookup {
             Term::Triple(_) => {
                 Err(CorruptionError::msg("A triple has been found instead of a named node").into())
             }
+            Term::Sequence(_) => Err(CorruptionError::msg(
+                "A sequence has been found instead of a named node",
+            )
+            .into()),
         }
     }
 
     #[cfg(feature = "rdf-12")]
     fn decode_triple(&self, encoded: &EncodedTriple) -> Result<Triple, StorageError> {
         Ok(Triple::new(
-            self.decode_named_or_blank_node(&encoded.subject)?,
+            self.decode_subject(&encoded.subject)?,
             self.decode_named_node(&encoded.predicate)?,
             self.decode_term(&encoded.object)?,
         ))
@@ -972,7 +1011,7 @@ pub trait Decoder: StrLookup {
 
     fn decode_quad(&self, encoded: &EncodedQuad) -> Result<Quad, StorageError> {
         Ok(Quad::new(
-            self.decode_named_or_blank_node(&encoded.subject)?,
+            self.decode_subject(&encoded.subject)?,
             self.decode_named_node(&encoded.predicate)?,
             self.decode_term(&encoded.object)?,
             if encoded.graph_name == EncodedTerm::DefaultGraph {
@@ -990,6 +1029,11 @@ pub trait Decoder: StrLookup {
                     Term::Triple(_) => {
                         return Err(
                             CorruptionError::msg("A triple is not a valid graph name").into()
+                        );
+                    }
+                    Term::Sequence(_) => {
+                        return Err(
+                            CorruptionError::msg("A sequence is not a valid graph name").into()
                         );
                     }
                 }
@@ -1152,6 +1196,13 @@ impl<S: StrLookup> Decoder for S {
             EncodedTerm::DayTimeDurationLiteral(value) => Ok(Literal::from(*value).into()),
             #[cfg(feature = "rdf-12")]
             EncodedTerm::Triple(triple) => Ok(self.decode_triple(triple)?.into()),
+            EncodedTerm::Sequence(elements) => Ok(Sequence::from(
+                elements
+                    .iter()
+                    .map(|e| self.decode_term(e))
+                    .collect::<Result<Vec<_>, _>>()?,
+            )
+            .into()),
         }
     }
 }

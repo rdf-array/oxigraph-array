@@ -1129,9 +1129,9 @@ fn is_term_pattern_bound(pattern: &GroundTermPattern, input_types: &VariableType
     match pattern {
         GroundTermPattern::NamedNode(_) | GroundTermPattern::Literal(_) => true,
         GroundTermPattern::Variable(v) => !input_types.get(v).undef,
-        GroundTermPattern::Sequence(elements) => {
-            elements.iter().all(|e| is_term_pattern_bound(e, input_types))
-        }
+        GroundTermPattern::Sequence(elements) => elements
+            .iter()
+            .all(|e| is_term_pattern_bound(e, input_types)),
         // rdf-array: the sequence of a position pattern is never known in advance
         GroundTermPattern::SequencePosition { .. } => false,
         #[cfg(feature = "sparql-12")]

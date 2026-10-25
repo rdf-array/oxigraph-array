@@ -9,7 +9,7 @@ use oxjsonld::{
     JsonLdParser, JsonLdPrefixesIter, JsonLdProfileSet, JsonLdRemoteDocument, ReaderJsonLdParser,
     SliceJsonLdParser,
 };
-use oxrdf::{BlankNode, GraphName, IriParseError, NamedOrBlankNode, Quad, Term, Triple};
+use oxrdf::{BlankNode, GraphName, IriParseError, Quad, Sequence, Subject, Term, Triple};
 #[cfg(feature = "async-tokio")]
 use oxrdfxml::TokioAsyncReaderRdfXmlParser;
 use oxrdfxml::{RdfXmlParser, RdfXmlPrefixesIter, ReaderRdfXmlParser, SliceRdfXmlParser};
@@ -1142,11 +1142,16 @@ impl QuadMapper {
         }
     }
 
-    fn map_subject(&mut self, node: NamedOrBlankNode) -> NamedOrBlankNode {
+    fn map_subject(&mut self, node: Subject) -> Subject {
         match node {
-            NamedOrBlankNode::NamedNode(node) => node.into(),
-            NamedOrBlankNode::BlankNode(node) => self.map_blank_node(node).into(),
+            Subject::NamedNode(node) => node.into(),
+            Subject::BlankNode(node) => self.map_blank_node(node).into(),
+            Subject::Sequence(sequence) => self.map_sequence(sequence).into(),
         }
+    }
+
+    fn map_sequence(&mut self, sequence: Sequence) -> Sequence {
+        sequence.into_iter().map(|e| self.map_term(e)).collect()
     }
 
     fn map_term(&mut self, node: Term) -> Term {
@@ -1156,6 +1161,7 @@ impl QuadMapper {
             Term::Literal(literal) => literal.into(),
             #[cfg(feature = "rdf-12")]
             Term::Triple(triple) => self.map_triple(*triple).into(),
+            Term::Sequence(sequence) => self.map_sequence(sequence).into(),
         }
     }
 
@@ -1205,6 +1211,7 @@ impl QuadMapper {
             subject: match quad.subject {
                 N3Term::NamedNode(s) => Ok(s.into()),
                 N3Term::BlankNode(s) => Ok(self.map_blank_node(s).into()),
+                N3Term::Sequence(s) => Ok(self.map_n3_sequence(s)?.into()),
                 N3Term::Literal(_) => Err(RdfSyntaxError::msg(
                     "literals are not allowed in regular RDF subjects",
                 )),
@@ -1231,18 +1238,35 @@ impl QuadMapper {
                 N3Term::Variable(_) => Err(RdfSyntaxError::msg(
                     "variables are not allowed in regular RDF predicates",
                 )),
-            }?,
-            object: match quad.object {
-                N3Term::NamedNode(o) => Ok(o.into()),
-                N3Term::BlankNode(o) => Ok(self.map_blank_node(o).into()),
-                N3Term::Literal(o) => Ok(o.into()),
-                #[cfg(feature = "rdf-12")]
-                N3Term::Triple(o) => Ok(self.map_triple(*o).into()),
-                N3Term::Variable(_) => Err(RdfSyntaxError::msg(
-                    "variables are not allowed in regular RDF objects",
+                N3Term::Sequence(_) => Err(RdfSyntaxError::msg(
+                    "sequences are not allowed in regular RDF predicates",
                 )),
             }?,
+            object: self.map_n3_object(quad.object)?,
             graph_name: self.map_graph_name(quad.graph_name)?,
         })
+    }
+
+    fn map_n3_object(&mut self, term: N3Term) -> Result<Term, RdfSyntaxError> {
+        match term {
+            N3Term::NamedNode(o) => Ok(o.into()),
+            N3Term::BlankNode(o) => Ok(self.map_blank_node(o).into()),
+            N3Term::Literal(o) => Ok(o.into()),
+            #[cfg(feature = "rdf-12")]
+            N3Term::Triple(o) => Ok(self.map_triple(*o).into()),
+            N3Term::Sequence(o) => Ok(self.map_n3_sequence(o)?.into()),
+            N3Term::Variable(_) => Err(RdfSyntaxError::msg(
+                "variables are not allowed in regular RDF objects",
+            )),
+        }
+    }
+
+    /// rdf-array: an N3 collection is a sequence
+    fn map_n3_sequence(&mut self, elements: Vec<N3Term>) -> Result<Sequence, RdfSyntaxError> {
+        elements
+            .into_iter()
+            .map(|e| self.map_n3_object(e))
+            .collect::<Result<Vec<_>, _>>()
+            .map(Sequence::from)
     }
 }

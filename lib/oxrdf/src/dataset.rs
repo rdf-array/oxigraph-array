@@ -877,13 +877,12 @@ impl Dataset {
                 })
                 .into()
             }
-            InternedSubject::Sequence(sequence) => Sequence::new(
-                sequence
-                    .elements
-                    .iter()
-                    .map(|e| self.hash_first_degree_quads_decode_term(e, reference_blank_node_identifier)),
-            )
-            .into(),
+            InternedSubject::Sequence(sequence) => {
+                Sequence::new(sequence.elements.iter().map(|e| {
+                    self.hash_first_degree_quads_decode_term(e, reference_blank_node_identifier)
+                }))
+                .into()
+            }
         }
     }
 
@@ -916,12 +915,9 @@ impl Dataset {
                 ),
             )
             .into(),
-            InternedTerm::Sequence(sequence) => Sequence::new(
-                sequence
-                    .elements
-                    .iter()
-                    .map(|e| self.hash_first_degree_quads_decode_term(e, reference_blank_node_identifier)),
-            )
+            InternedTerm::Sequence(sequence) => Sequence::new(sequence.elements.iter().map(|e| {
+                self.hash_first_degree_quads_decode_term(e, reference_blank_node_identifier)
+            }))
             .into(),
         }
     }
@@ -1048,7 +1044,10 @@ impl Dataset {
                     "o",
                 ),
             ] {
-                for component in sequence.map(InternedSequence::blank_nodes).unwrap_or_default() {
+                for component in sequence
+                    .map(InternedSequence::blank_nodes)
+                    .unwrap_or_default()
+                {
                     self.hash_related_blank_node_on_possible_component(
                         canonicalization_state,
                         component,
@@ -1364,9 +1363,9 @@ impl Dataset {
         Triple {
             subject: match &triple.subject {
                 InternedSubject::BlankNode(bnode) => bnode_mapping[bnode].clone().into(),
-                InternedSubject::Sequence(sequence) => {
-                    self.map_sequence_blank_nodes(sequence, bnode_mapping).into()
-                }
+                InternedSubject::Sequence(sequence) => self
+                    .map_sequence_blank_nodes(sequence, bnode_mapping)
+                    .into(),
                 InternedSubject::NamedNode(_) => {
                     triple.subject.decode_from(&self.interner).into_owned()
                 }
@@ -1386,9 +1385,9 @@ impl Dataset {
             InternedTerm::BlankNode(bnode) => bnode_mapping[bnode].clone().into(),
             #[cfg(feature = "rdf-12")]
             InternedTerm::Triple(t) => self.map_triple_blank_nodes(t, bnode_mapping).into(),
-            InternedTerm::Sequence(sequence) => {
-                self.map_sequence_blank_nodes(sequence, bnode_mapping).into()
-            }
+            InternedTerm::Sequence(sequence) => self
+                .map_sequence_blank_nodes(sequence, bnode_mapping)
+                .into(),
             InternedTerm::NamedNode(_) | InternedTerm::Literal(_) => {
                 term.decode_from(&self.interner).into_owned()
             }
@@ -1576,7 +1575,12 @@ impl<'a> GraphView<'a> {
         self.dataset
             .gspo
             .range(
-                &(self.graph_name, subject.clone(), predicate, InternedTerm::first())
+                &(
+                    self.graph_name,
+                    subject.clone(),
+                    predicate,
+                    InternedTerm::first(),
+                )
                     ..&(
                         self.graph_name,
                         subject,
@@ -1901,10 +1905,7 @@ impl<'a> GraphViewMut<'a> {
 
     fn encode_triple(&mut self, triple: TripleRef<'_>) -> InternedTriple {
         InternedTriple {
-            subject: InternedSubject::encoded_into(
-                triple.subject,
-                &mut self.dataset.interner,
-            ),
+            subject: InternedSubject::encoded_into(triple.subject, &mut self.dataset.interner),
             predicate: InternedNamedNode::encoded_into(
                 triple.predicate,
                 &mut self.dataset.interner,

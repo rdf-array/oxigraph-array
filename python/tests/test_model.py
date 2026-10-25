@@ -11,6 +11,7 @@ from pyoxigraph import (
     Literal,
     NamedNode,
     Quad,
+    Sequence,
     Triple,
     Variable,
 )
@@ -454,6 +455,49 @@ class TestVariable(unittest.TestCase):
 
     def test_wildcard_match(self) -> None:
         match_works(self, 'Variable("foo")', "Variable(x)")
+
+
+class TestSequence(unittest.TestCase):
+    """rdf-array: the sequence term"""
+
+    def test_constructor(self) -> None:
+        seq = Sequence([Literal("1"), NamedNode("http://foo"), Sequence()])
+        self.assertEqual(len(seq), 3)
+        self.assertEqual(seq[0], Literal("1"))
+        self.assertEqual(seq[-1], Sequence())
+        self.assertEqual(list(seq), seq.elements)
+        self.assertEqual(len(Sequence()), 0)
+        with self.assertRaises(IndexError):
+            seq[3]
+
+    def test_string(self) -> None:
+        self.assertEqual(
+            str(Sequence([Literal("1"), NamedNode("http://foo"), Sequence()])),
+            '("1" <http://foo> ())',
+        )
+        self.assertEqual(str(Sequence()), "()")
+
+    def test_equal(self) -> None:
+        self.assertEqual(Sequence([Literal("1")]), Sequence([Literal("1")]))
+        self.assertNotEqual(Sequence([Literal("1")]), Sequence([Literal("2")]))
+        self.assertNotEqual(Sequence(), NamedNode("http://www.w3.org/1999/02/22-rdf-syntax-ns#nil"))
+        self.assertEqual(hash(Sequence([Literal("1")])), hash(Sequence([Literal("1")])))
+
+    def test_pickle(self) -> None:
+        seq = Sequence([BlankNode("b"), Sequence([Literal("1")])])
+        self.assertEqual(pickle.loads(pickle.dumps(seq)), seq)
+        self.assertEqual(copy.copy(seq), seq)
+        self.assertEqual(copy.deepcopy(seq), seq)
+
+    def test_in_triples_and_quads(self) -> None:
+        seq = Sequence([NamedNode("http://foo")])
+        t = Triple(seq, NamedNode("http://p"), Sequence())
+        self.assertEqual(t.subject, seq)
+        self.assertEqual(t.object, Sequence())
+        self.assertEqual(str(t), "(<http://foo>) <http://p> ()")
+        q = Quad(seq, NamedNode("http://p"), seq, NamedNode("http://g"))
+        self.assertEqual(q[0], seq)
+        self.assertEqual(pickle.loads(pickle.dumps(q)), q)
 
 
 if __name__ == "__main__":

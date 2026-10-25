@@ -1,6 +1,7 @@
 [submodule "testsuite/rdf-tests"]
 	path = testsuite/rdf-tests
-	url = https://github.com/w3c/rdf-tests.git
+	url = https://github.com/rdf-array/rdf-tests-array.git
+	branch = rdf-sequences
 [submodule "bench/bsbm-tools"]
 	path = bench/bsbm-tools
 	url = https://github.com/Tpt/bsbm-tools.git
@@ -22,7 +23,17 @@
 	url = https://github.com/oxigraph/yasgui-release.git
 [submodule "testsuite/json-ld-streaming"]
 	path = testsuite/json-ld-streaming
-	url = https://github.com/w3c/json-ld-streaming.git
+	url = https://github.com/rdf-array/json-ld-streaming-array.git
+	branch = rdf-sequences
 [submodule "testsuite/json-ld-api"]
 	path = testsuite/json-ld-api
-	url = https://github.com/w3c/json-ld-api.git
+	url = https://github.com/rdf-array/json-ld-api-array.git
+	branch = rdf-sequences
+[submodule "testsuite/rdf-tests-contrib"]
+	path = testsuite/rdf-tests-contrib
+	url = https://github.com/rdf-array/rdf-tests-contrib.git
+	branch = main
+[submodule "testsuite/json-ld-api-contrib"]
+	path = testsuite/json-ld-api-contrib
+	url = https://github.com/rdf-array/json-ld-api-contrib.git
+	branch = main

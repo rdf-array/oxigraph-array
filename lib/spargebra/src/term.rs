@@ -497,7 +497,11 @@ impl TermPattern {
             Self::NamedNode(_) | Self::Literal(_) => true,
             Self::BlankNode(_) | Self::Variable(_) | Self::SequencePosition { .. } => false,
             #[cfg(feature = "sparql-12")]
-            Self::Triple(triple) => triple.subject.is_ground() && matches!(triple.predicate, NamedNodePattern::NamedNode(_)) && triple.object.is_ground(),
+            Self::Triple(triple) => {
+                triple.subject.is_ground()
+                    && matches!(triple.predicate, NamedNodePattern::NamedNode(_))
+                    && triple.object.is_ground()
+            }
             Self::Sequence(elements) => elements.iter().all(Self::is_ground),
         }
     }
@@ -609,8 +613,11 @@ impl From<GroundTermPattern> for TermPattern {
             GroundTermPattern::Sequence(elements) => {
                 Self::Sequence(elements.into_iter().map(Into::into).collect())
             }
-            GroundTermPattern::SequencePosition { element, position } => Self::SequencePosition {
-                element: Box::new((*element).into()),
+            GroundTermPattern::SequencePosition {
+                element: inner,
+                position,
+            } => Self::SequencePosition {
+                element: Box::new((*inner).into()),
                 position,
             },
         }

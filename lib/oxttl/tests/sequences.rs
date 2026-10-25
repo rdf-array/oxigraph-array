@@ -1,4 +1,5 @@
 //! rdf-array: collections are sequence terms in every Turtle-family syntax.
+#![cfg(test)]
 #![expect(clippy::panic, clippy::unwrap_used)]
 
 use oxrdf::{BlankNode, Literal, NamedNode, Quad, Sequence, Subject, Term, Triple};
@@ -186,6 +187,9 @@ fn turtle_round_trip() {
         serializer.serialize_triple(t).unwrap();
     }
     let written = String::from_utf8(serializer.finish().unwrap()).unwrap();
-    assert!(written.contains("( :a ) :p ( 1 ( \"x\" ) () ) , ()"), "{written}");
+    assert!(
+        written.contains("( :a ) :p ( 1 ( \"x\" ) () ) , ()"),
+        "{written}"
+    );
     assert_eq!(turtle(&written), triples);
 }

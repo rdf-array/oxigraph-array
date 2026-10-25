@@ -1,4 +1,5 @@
 //! rdf-array: sequence patterns, position patterns, functions, ordering and CONSTRUCT over an in-memory dataset.
+#![cfg(test)]
 #![expect(clippy::unwrap_used, clippy::panic)]
 
 use oxrdf::{Dataset, GraphName, Triple};
@@ -20,7 +21,11 @@ const DATA: &str = "
 fn dataset() -> Dataset {
     DATA.lines()
         .filter(|l| !l.trim().is_empty())
-        .map(|l| Triple::from_str(l).unwrap().in_graph(GraphName::DefaultGraph))
+        .map(|l| {
+            Triple::from_str(l)
+                .unwrap()
+                .in_graph(GraphName::DefaultGraph)
+        })
         .collect()
 }
 
@@ -32,8 +37,10 @@ fn select(query: &str) -> Vec<String> {
         .parse_query(query)
         .unwrap();
     let dataset = dataset();
-    let QueryResults::Solutions(solutions) =
-        QueryEvaluator::new().prepare(&query).execute(&dataset).unwrap()
+    let QueryResults::Solutions(solutions) = QueryEvaluator::new()
+        .prepare(&query)
+        .execute(&dataset)
+        .unwrap()
     else {
         panic!("not a SELECT")
     };
@@ -54,35 +61,67 @@ fn int(i: i64) -> String {
 
 #[test]
 fn sequence_with_variables() {
-    assert_eq!(select("SELECT ?s ?b { ?s :p ( ?a ?b 3 ) }"), vec![format!("s=<http://example/x> b={}", int(2))]);
+    assert_eq!(
+        select("SELECT ?s ?b { ?s :p ( ?a ?b 3 ) }"),
+        vec![format!("s=<http://example/x> b={}", int(2))]
+    );
     assert_eq!(
         select("SELECT ?y { ?s :p ( :a ( ?x ?y ) ) }"),
         vec!["y=<http://example/c>".to_owned()]
     );
-    assert_eq!(select("SELECT ?s { ?s :p () }"), vec!["s=<http://example/z>"]);
-    assert_eq!(select("SELECT ?s { ?s :q ( ?v ?v ) }"), vec!["s=<http://example/r>"]);
+    assert_eq!(
+        select("SELECT ?s { ?s :p () }"),
+        vec!["s=<http://example/z>"]
+    );
+    assert_eq!(
+        select("SELECT ?s { ?s :q ( ?v ?v ) }"),
+        vec!["s=<http://example/r>"]
+    );
     assert_eq!(
         select("SELECT ?s { ?s :p ( ?a ?b ) }"),
         vec!["s=<http://example/y>"],
         "only the two-element sequence"
     );
-    assert!(select("SELECT ?s { ?s :p ( ?a ?b ?c ?d ) }").is_empty(), "length mismatch");
-    assert_eq!(select("SELECT ?s { ?s :p ( 1 2 3 ) }"), vec!["s=<http://example/x>"]);
+    assert!(
+        select("SELECT ?s { ?s :p ( ?a ?b ?c ?d ) }").is_empty(),
+        "length mismatch"
+    );
+    assert_eq!(
+        select("SELECT ?s { ?s :p ( 1 2 3 ) }"),
+        vec!["s=<http://example/x>"]
+    );
 }
 
 #[test]
 fn position_patterns() {
-    assert_eq!(select("SELECT ?e { :x :p ((?e))[2] }"), vec![format!("e={}", int(2))]);
+    assert_eq!(
+        select("SELECT ?e { :x :p ((?e))[2] }"),
+        vec![format!("e={}", int(2))]
+    );
     assert!(select("SELECT ?e { :x :p ((?e))[4] }").is_empty());
     assert_eq!(
         select("SELECT ?i ?e { :x :p ((?e))[?i] } ORDER BY ?i"),
-        (1..=3).map(|i| format!("i={} e={}", int(i), int(i))).collect::<Vec<_>>()
+        (1..=3)
+            .map(|i| format!("i={} e={}", int(i), int(i)))
+            .collect::<Vec<_>>()
     );
-    assert_eq!(select("SELECT ?s ?e { ?s :p ((?e))[*] } ORDER BY ?s ?e").len(), 3 + 2 + 3);
-    assert_eq!(select("SELECT ?e { :y :p ((((?e))[1]))[2] }"), vec!["e=<http://example/b>"]);
-    assert_eq!(select("SELECT ?s { ?s :p ((:a))[1] }"), vec!["s=<http://example/y>"]);
+    assert_eq!(
+        select("SELECT ?s ?e { ?s :p ((?e))[*] } ORDER BY ?s ?e").len(),
+        3 + 2 + 3
+    );
+    assert_eq!(
+        select("SELECT ?e { :y :p ((((?e))[1]))[2] }"),
+        vec!["e=<http://example/b>"]
+    );
+    assert_eq!(
+        select("SELECT ?s { ?s :p ((:a))[1] }"),
+        vec!["s=<http://example/y>"]
+    );
     assert!(select("SELECT ?s { ?s :p ((:a))[2] }").is_empty());
-    assert_eq!(select("SELECT ?e { :s :idx ?i . :s :p ((?e))[?i] }"), vec![format!("e={}", int(20))]);
+    assert_eq!(
+        select("SELECT ?e { :s :idx ?i . :s :p ((?e))[?i] }"),
+        vec![format!("e={}", int(20))]
+    );
 }
 
 #[test]
@@ -96,13 +135,22 @@ fn functions() {
             format!("s=<http://example/z> n={}", int(0)),
         ]
     );
-    assert_eq!(select("SELECT ?s { ?s :p ?o FILTER(!isSEQ(?o)) }"), vec!["s=<http://example/w>"]);
-    assert_eq!(select("SELECT ?e { :y :p ?seq BIND(?seq[2][1] AS ?e) }"), vec!["e=<http://example/b>"]);
+    assert_eq!(
+        select("SELECT ?s { ?s :p ?o FILTER(!isSEQ(?o)) }"),
+        vec!["s=<http://example/w>"]
+    );
+    assert_eq!(
+        select("SELECT ?e { :y :p ?seq BIND(?seq[2][1] AS ?e) }"),
+        vec!["e=<http://example/b>"]
+    );
     assert_eq!(
         select("SELECT ?seq { BIND(SEQ(1, :a, SEQ()) AS ?seq) }"),
         vec![format!("seq=({} <http://example/a> ())", int(1))]
     );
-    assert_eq!(select("SELECT ?s { ?s :p ?seq FILTER(?seq = SEQ(1, 2, 3)) }"), vec!["s=<http://example/x>"]);
+    assert_eq!(
+        select("SELECT ?s { ?s :p ?seq FILTER(?seq = SEQ(1, 2, 3)) }"),
+        vec!["s=<http://example/x>"]
+    );
 }
 
 #[test]
@@ -126,7 +174,11 @@ fn construct() {
         .parse_query("PREFIX : <http://example/> CONSTRUCT { ?s :r ( ?e [ :k ?e ] ) } WHERE { ?s :p ((?e))[1] }")
         .unwrap();
     let dataset = dataset();
-    let QueryResults::Graph(triples) = QueryEvaluator::new().prepare(&query).execute(&dataset).unwrap() else {
+    let QueryResults::Graph(triples) = QueryEvaluator::new()
+        .prepare(&query)
+        .execute(&dataset)
+        .unwrap()
+    else {
         panic!()
     };
     let triples = triples.collect::<Result<Vec<_>, _>>().unwrap();

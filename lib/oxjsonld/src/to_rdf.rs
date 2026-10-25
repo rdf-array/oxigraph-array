@@ -10,8 +10,8 @@ use oxiri::{Iri, IriParseError};
 use oxrdf::BaseDirection;
 use oxrdf::vocab::{rdf, xsd};
 use oxrdf::{
-    BlankNode, GraphName, Literal, NamedNode, NamedNodeRef, NamedOrBlankNode, Quad, Sequence, Subject,
-    Term,
+    BlankNode, GraphName, Literal, NamedNode, NamedNodeRef, NamedOrBlankNode, Quad, Sequence,
+    Subject, Term,
 };
 use std::error::Error;
 use std::fmt::Write;

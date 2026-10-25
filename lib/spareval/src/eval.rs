@@ -728,32 +728,21 @@ impl<'a, D: QueryableDataset<'a>> SimpleEvaluator<'a, D> {
                 };
                 let dataset = self.dataset.clone();
                 Rc::new(move |from| {
-                    let input_subject = match subject_selector.get_pattern_value(
-                        &from,
-                        &dataset,
-                    ) {
+                    let input_subject = match subject_selector.get_pattern_value(&from, &dataset) {
                         Ok(value) => value,
                         Err(e) => return Box::new(once(Err(e))),
                     };
-                    let input_predicate = match predicate_selector.get_pattern_value(
-                        &from,
-                        &dataset,
-                    ) {
-                        Ok(value) => value,
-                        Err(e) => return Box::new(once(Err(e))),
-                    };
-                    let input_object = match object_selector.get_pattern_value(
-                        &from,
-                        &dataset,
-                    ) {
+                    let input_predicate =
+                        match predicate_selector.get_pattern_value(&from, &dataset) {
+                            Ok(value) => value,
+                            Err(e) => return Box::new(once(Err(e))),
+                        };
+                    let input_object = match object_selector.get_pattern_value(&from, &dataset) {
                         Ok(value) => value,
                         Err(e) => return Box::new(once(Err(e))),
                     };
                     let input_graph_name = if let Some(graph_name_selector) = &graph_name_selector {
-                        match graph_name_selector.get_pattern_value(
-                            &from,
-                            &dataset,
-                        ) {
+                        match graph_name_selector.get_pattern_value(&from, &dataset) {
                             Ok(value) => value,
                             Err(e) => return Box::new(once(Err(e))),
                         }
@@ -887,28 +876,19 @@ impl<'a, D: QueryableDataset<'a>> SimpleEvaluator<'a, D> {
                 };
                 let dataset = self.dataset.clone();
                 Rc::new(move |from| {
-                    let input_subject = match subject_selector.get_pattern_value(
-                        &from,
-                        &dataset,
-                    ) {
+                    let input_subject = match subject_selector.get_pattern_value(&from, &dataset) {
                         Ok(value) => value,
                         Err(e) => return Box::new(once(Err(e))),
                     };
                     let path_eval = PathEvaluator {
                         dataset: dataset.clone(),
                     };
-                    let input_object = match object_selector.get_pattern_value(
-                        &from,
-                        &dataset,
-                    ) {
+                    let input_object = match object_selector.get_pattern_value(&from, &dataset) {
                         Ok(value) => value,
                         Err(e) => return Box::new(once(Err(e))),
                     };
                     let input_graph_name = if let Some(graph_name_selector) = &graph_name_selector {
-                        match graph_name_selector.get_pattern_value(
-                            &from,
-                            &dataset,
-                        ) {
+                        match graph_name_selector.get_pattern_value(&from, &dataset) {
                             Ok(value) => value,
                             Err(e) => return Box::new(once(Err(e))),
                         }
@@ -1179,13 +1159,11 @@ impl<'a, D: QueryableDataset<'a>> SimpleEvaluator<'a, D> {
                 )?;
                 let dataset = self.dataset.clone();
                 Rc::new(move |from| {
-                    let input_graph_name = match graph_name_selector.get_pattern_value(
-                        &from,
-                        &dataset,
-                    ) {
-                        Ok(value) => value,
-                        Err(e) => return Box::new(once(Err(e))),
-                    };
+                    let input_graph_name =
+                        match graph_name_selector.get_pattern_value(&from, &dataset) {
+                            Ok(value) => value,
+                            Err(e) => return Box::new(once(Err(e))),
+                        };
                     if let Some(input_graph_name) = input_graph_name {
                         match dataset.contains_internal_graph_name(&input_graph_name) {
                             Ok(true) => Box::new(once(Ok(from))),
@@ -1810,10 +1788,7 @@ impl<'a, D: QueryableDataset<'a>> SimpleEvaluator<'a, D> {
         from: &InternalTuple<D::InternalTerm>,
     ) -> Result<InternalTuplesIterator<'a, D::InternalTerm>, QueryEvaluationError> {
         let service_name = service_name
-            .get_pattern_value(
-                from,
-                &self.dataset,
-            )?
+            .get_pattern_value(from, &self.dataset)?
             .ok_or(QueryEvaluationError::UnboundService)?;
         let service_name = match self.dataset.externalize_term(service_name)? {
             Term::NamedNode(service_name) => service_name,
@@ -2784,7 +2759,7 @@ enum TupleSelector<T> {
     #[cfg(feature = "sparql-12")]
     TriplePattern(Rc<TripleTupleSelector<T>>),
     /// rdf-array: a sequence pattern with variables
-    Sequence(Rc<Vec<TupleSelector<T>>>),
+    Sequence(Rc<[TupleSelector<T>]>),
     /// rdf-array: a position pattern `((element))[position]`
     SequencePosition(Rc<SequencePositionSelector<T>>),
 }
@@ -2861,7 +2836,7 @@ impl<T: Clone> TupleSelector<T> {
                     if let Self::Constant(c) = selector {
                         constants.push(dataset.externalize_expression_term(c.clone())?);
                     } else {
-                        return Ok(Self::Sequence(Rc::new(selectors)));
+                        return Ok(Self::Sequence(selectors.into()));
                     }
                 }
                 Self::Constant(
@@ -2912,9 +2887,7 @@ impl<T: Clone> TupleSelector<T> {
             }
         })
     }
-}
 
-impl<T: Clone> TupleSelector<T> {
     fn get_pattern_value<'a>(
         &self,
         tuple: &InternalTuple<T>,
@@ -3082,9 +3055,8 @@ fn put_pattern_values<'a, D: QueryableDataset<'a>>(
                     PositionSelector::Variable(v) => {
                         let position = dataset.internalize_expression_term(
                             ExpressionTerm::IntegerLiteral(Integer::from(
-                                i64::try_from(i + 1).map_err(|e| {
-                                    QueryEvaluationError::Unexpected(Box::new(e))
-                                })?,
+                                i64::try_from(i + 1)
+                                    .map_err(|e| QueryEvaluationError::Unexpected(Box::new(e)))?,
                             )),
                         )?;
                         if let Some(old) = tuple.get(v) {
@@ -3129,12 +3101,14 @@ fn put_pattern_values<'a, D: QueryableDataset<'a>>(
             Ok(tuples)
         }
         _ => {
-            let mut tuple = tuple;
-            Ok(if put_pattern_value(selector, value, &mut tuple, dataset)? {
-                vec![tuple]
-            } else {
-                Vec::new()
-            })
+            let mut single = tuple;
+            Ok(
+                if put_pattern_value(selector, value, &mut single, dataset)? {
+                    vec![single]
+                } else {
+                    Vec::new()
+                },
+            )
         }
     }
 }

@@ -30,7 +30,7 @@ pub mod pyoxigraph {
     use super::{
         PyBlankNode, PyCanonicalizationAlgorithm, PyDataset, PyDefaultGraph, PyLiteral,
         PyNamedNode, PyQuad, PyQuadParser, PyQueryBoolean, PyQueryResultsFormat, PyQuerySolution,
-        PyQuerySolutions, PyQueryTriples, PyRdfFormat, PyStore, PyTriple, PyVariable, parse,
-        parse_query_results, serialize,
+        PyQuerySolutions, PyQueryTriples, PyRdfFormat, PySequence, PyStore, PyTriple, PyVariable,
+        parse, parse_query_results, serialize,
     };
 }

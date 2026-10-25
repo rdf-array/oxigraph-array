@@ -878,7 +878,8 @@ impl RuleRecognizer for TriGRecognizer {
                 // [29] reifiedTriple 	::= 	'<<' rtSubject verb rtObject reifier? '>>'
                 #[cfg(feature = "rdf-12")]
                 TriGState::SubjectReifiedTripleEnd => {
-                    self.cur_subject.push(self.cur_reifier.pop().unwrap().into());
+                    self.cur_subject
+                        .push(self.cur_reifier.pop().unwrap().into());
                     if token == N3Token::Punctuation(">>") {
                         self
                     } else {

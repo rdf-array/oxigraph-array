@@ -197,6 +197,7 @@ impl TestManifest {
                             TermRef::Literal(_) => None,
                             #[cfg(feature = "rdf-12")]
                             TermRef::Triple(_) => None,
+                            TermRef::Sequence(_) => None,
                         })
                         .collect::<Result<_, _>>()?;
                     let service_data = self
@@ -208,6 +209,7 @@ impl TestManifest {
                             TermRef::Literal(_) => None,
                             #[cfg(feature = "rdf-12")]
                             TermRef::Triple(_) => None,
+                            TermRef::Sequence(_) => None,
                         })
                         .filter_map(|g: NamedOrBlankNodeRef<'_>| {
                             if let (
@@ -276,12 +278,14 @@ impl TestManifest {
                             TermRef::Literal(_) => None,
                             #[cfg(feature = "rdf-12")]
                             TermRef::Triple(_) => None,
+                            TermRef::Sequence(_) => None,
                         })
                         .collect::<Result<_, _>>()?,
                 ),
                 Some(TermRef::Literal(l)) => (Some(l.value().to_owned()), Vec::new()),
                 #[cfg(feature = "rdf-12")]
                 Some(TermRef::Triple(_)) => bail!("invalid result"),
+                Some(TermRef::Sequence(_)) => bail!("invalid result"),
                 None => (None, Vec::new()),
             };
             let mut option = match self
@@ -371,6 +375,14 @@ impl TestManifest {
                     }),
                 );
             }
+            // rdf-array: the manifest's ( … ) is one sequence term
+            Some(TermRef::Sequence(list)) => {
+                self.manifests_to_do
+                    .extend(list.iter().filter_map(|m| match m {
+                        TermRef::NamedNode(nm) => Some(nm.as_str().to_owned()),
+                        _ => None,
+                    }));
+            }
             Some(_) => bail!("invalid tests list"),
             None => (),
         }
@@ -383,6 +395,10 @@ impl TestManifest {
             Some(TermRef::BlankNode(list)) => {
                 self.tests_to_do
                     .extend(RdfListIterator::iter(&self.graph, list.into()));
+            }
+            Some(TermRef::Sequence(list)) => {
+                self.tests_to_do
+                    .extend(list.iter().map(TermRef::into_owned));
             }
             Some(term) => {
                 bail!("Invalid tests list. Got term {term}");

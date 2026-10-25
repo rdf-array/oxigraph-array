@@ -7,7 +7,7 @@ use anyhow::{Context, Result, bail, ensure};
 use json_event_parser::{JsonEvent, SliceJsonParser};
 use oxigraph::io::{RdfFormat, RdfParser, RdfSerializer};
 use oxigraph::model::graph::CanonicalizationAlgorithm;
-use oxigraph::model::{BlankNode, Dataset, Quad, Term};
+use oxigraph::model::{BlankNode, Dataset, Quad, Sequence, Subject, Term};
 use oxjsonld::{
     JsonLdParser, JsonLdProcessingMode, JsonLdProfile, JsonLdProfileSet, JsonLdRemoteDocument,
     JsonLdSyntaxError,
@@ -314,30 +314,35 @@ fn n3_to_dataset(quads: Vec<N3Quad>) -> Dataset {
         .into_iter()
         .filter_map(|q| {
             Some(Quad {
-                subject: match q.subject {
-                    N3Term::NamedNode(n) => n.into(),
-                    N3Term::BlankNode(n) => n.into(),
-                    N3Term::Literal(_) => return None,
-                    #[cfg(feature = "rdf-12")]
-                    N3Term::Triple(_) => return None,
-                    N3Term::Variable(v) => BlankNode::new_unchecked(v.into_string()).into(),
-                },
+                subject: Subject::try_from(n3_term_to_term(q.subject)?).ok()?,
                 predicate: match q.predicate {
                     N3Term::NamedNode(n) => n,
                     _ => return None,
                 },
-                object: match q.object {
-                    N3Term::NamedNode(n) => n.into(),
-                    N3Term::BlankNode(n) => n.into(),
-                    #[cfg(feature = "rdf-12")]
-                    N3Term::Triple(n) => n.into(),
-                    N3Term::Literal(n) => n.into(),
-                    N3Term::Variable(v) => BlankNode::new_unchecked(v.into_string()).into(),
-                },
+                object: n3_term_to_term(q.object)?,
                 graph_name: q.graph_name,
             })
         })
         .collect()
+}
+
+/// An N3 term as an RDF term, variables as blank nodes and (rdf-array) collections as sequences
+fn n3_term_to_term(term: N3Term) -> Option<Term> {
+    Some(match term {
+        N3Term::NamedNode(n) => n.into(),
+        N3Term::BlankNode(n) => n.into(),
+        #[cfg(feature = "rdf-12")]
+        N3Term::Triple(n) => n.into(),
+        N3Term::Literal(n) => n.into(),
+        N3Term::Variable(v) => BlankNode::new_unchecked(v.into_string()).into(),
+        N3Term::Sequence(elements) => Sequence::from(
+            elements
+                .into_iter()
+                .map(n3_term_to_term)
+                .collect::<Option<Vec<_>>>()?,
+        )
+        .into(),
+    })
 }
 
 fn parse_json_ld(

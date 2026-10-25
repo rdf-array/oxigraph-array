@@ -16,12 +16,12 @@ use rustc_hash::FxHashMap;
 use spareval::{DeleteInsertQuad, QueryDatasetSpecification, QueryEvaluator};
 use spargebra::GraphUpdateOperation;
 use spargebra::algebra::{GraphPattern, GraphTarget};
-use spargebra::term::{
-    BlankNode, GraphName, GroundQuad, GroundQuadPattern, GroundTerm, NamedNode, NamedOrBlankNode,
-    Quad, QuadPattern, Term,
-};
 #[cfg(feature = "rdf-12")]
-use spargebra::term::{GroundTriple, Triple};
+use spargebra::term::Triple;
+use spargebra::term::{
+    BlankNode, GraphName, GroundQuad, GroundQuadPattern, NamedNode, Quad, QuadPattern, Sequence,
+    Subject, Term,
+};
 #[cfg(feature = "http-client")]
 use std::io::Read;
 #[cfg(feature = "http-client")]
@@ -705,18 +705,9 @@ fn eval_load(_from: &NamedNode, _to: &GraphName) -> Result<Vec<OxQuad>, UpdateEv
 
 fn convert_quad(quad: &Quad, bnodes: &mut FxHashMap<BlankNode, BlankNode>) -> OxQuad {
     OxQuad {
-        subject: match &quad.subject {
-            NamedOrBlankNode::NamedNode(subject) => subject.clone().into(),
-            NamedOrBlankNode::BlankNode(subject) => convert_blank_node(subject, bnodes).into(),
-        },
+        subject: convert_subject(&quad.subject, bnodes),
         predicate: quad.predicate.clone(),
-        object: match &quad.object {
-            Term::NamedNode(object) => object.clone().into(),
-            Term::BlankNode(object) => convert_blank_node(object, bnodes).into(),
-            Term::Literal(object) => object.clone().into(),
-            #[cfg(feature = "rdf-12")]
-            Term::Triple(subject) => convert_triple(subject, bnodes).into(),
-        },
+        object: convert_term(&quad.object, bnodes),
         graph_name: match &quad.graph_name {
             GraphName::NamedNode(graph_name) => graph_name.clone().into(),
             GraphName::DefaultGraph => OxGraphName::DefaultGraph,
@@ -724,22 +715,36 @@ fn convert_quad(quad: &Quad, bnodes: &mut FxHashMap<BlankNode, BlankNode>) -> Ox
     }
 }
 
-#[cfg(feature = "rdf-12")]
-fn convert_triple(triple: &Triple, bnodes: &mut FxHashMap<BlankNode, BlankNode>) -> Triple {
-    Triple {
-        subject: match &triple.subject {
-            NamedOrBlankNode::NamedNode(subject) => subject.clone().into(),
-            NamedOrBlankNode::BlankNode(subject) => convert_blank_node(subject, bnodes).into(),
-        },
-        predicate: triple.predicate.clone(),
-        object: match &triple.object {
-            Term::NamedNode(object) => object.clone().into(),
-            Term::BlankNode(object) => convert_blank_node(object, bnodes).into(),
-            Term::Literal(object) => object.clone().into(),
-            #[cfg(feature = "rdf-12")]
-            Term::Triple(subject) => convert_triple(subject, bnodes).into(),
-        },
+/// Fresh blank nodes for the data's, those nested in triple terms and (rdf-array) sequences included.
+fn convert_subject(subject: &Subject, bnodes: &mut FxHashMap<BlankNode, BlankNode>) -> Subject {
+    match subject {
+        Subject::NamedNode(subject) => subject.clone().into(),
+        Subject::BlankNode(subject) => convert_blank_node(subject, bnodes).into(),
+        Subject::Sequence(sequence) => convert_sequence(sequence, bnodes).into(),
     }
+}
+
+fn convert_term(term: &Term, bnodes: &mut FxHashMap<BlankNode, BlankNode>) -> Term {
+    match term {
+        Term::NamedNode(object) => object.clone().into(),
+        Term::BlankNode(object) => convert_blank_node(object, bnodes).into(),
+        Term::Literal(object) => object.clone().into(),
+        #[cfg(feature = "rdf-12")]
+        Term::Triple(triple) => Triple {
+            subject: convert_subject(&triple.subject, bnodes),
+            predicate: triple.predicate.clone(),
+            object: convert_term(&triple.object, bnodes),
+        }
+        .into(),
+        Term::Sequence(sequence) => convert_sequence(sequence, bnodes).into(),
+    }
+}
+
+fn convert_sequence(sequence: &Sequence, bnodes: &mut FxHashMap<BlankNode, BlankNode>) -> Sequence {
+    sequence
+        .into_iter()
+        .map(|e| convert_term(e, bnodes))
+        .collect()
 }
 
 fn convert_blank_node(node: &BlankNode, bnodes: &mut FxHashMap<BlankNode, BlankNode>) -> BlankNode {
@@ -750,29 +755,10 @@ fn convert_ground_quad(quad: &GroundQuad) -> OxQuad {
     OxQuad {
         subject: quad.subject.clone().into(),
         predicate: quad.predicate.clone(),
-        object: match &quad.object {
-            GroundTerm::NamedNode(object) => object.clone().into(),
-            GroundTerm::Literal(object) => object.clone().into(),
-            #[cfg(feature = "rdf-12")]
-            GroundTerm::Triple(subject) => convert_ground_triple(subject).into(),
-        },
+        object: quad.object.clone().into(),
         graph_name: match &quad.graph_name {
             GraphName::NamedNode(graph_name) => graph_name.clone().into(),
             GraphName::DefaultGraph => OxGraphName::DefaultGraph,
-        },
-    }
-}
-
-#[cfg(feature = "rdf-12")]
-fn convert_ground_triple(triple: &GroundTriple) -> Triple {
-    Triple {
-        subject: triple.subject.clone().into(),
-        predicate: triple.predicate.clone(),
-        object: match &triple.object {
-            GroundTerm::NamedNode(object) => object.clone().into(),
-            GroundTerm::Literal(object) => object.clone().into(),
-            #[cfg(feature = "rdf-12")]
-            GroundTerm::Triple(subject) => convert_ground_triple(subject).into(),
         },
     }
 }

@@ -3,9 +3,9 @@ use crate::ExpressionTriple;
 use crate::dataset::ExpressionTerm;
 use md5::{Digest, Md5};
 use oxiri::Iri;
-use oxrdf::vocab::{rdf, xsd};
 #[cfg(feature = "sparql-12")]
 use oxrdf::BaseDirection;
+use oxrdf::vocab::{rdf, xsd};
 use oxrdf::{BlankNode, Literal, NamedNode, Term, Variable};
 #[cfg(feature = "sep-0002")]
 use oxsdatatypes::{Date, DayTimeDuration, Duration, Time, TimezoneOffset, YearMonthDuration};
