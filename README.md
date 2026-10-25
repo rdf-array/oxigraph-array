@@ -1,3 +1,19 @@
+<img src=".github/rdf-array-logo.png" alt="[Oxigraph]" width="96" align="right">
+
+# oxigraph-array: Oxigraph for rdf-array
+
+**rdf-array** fork of [Oxigraph](https://github.com/oxigraph/oxigraph): the RDF data model gains a
+term, the **sequence** (`oxrdf::Sequence`, a `Term` and a triple's `Subject`). `(1 2 3)` in Turtle,
+TriG, N3, N-Triples and N-Quads, RDF/XML's `rdf:parseType="Collection"` and JSON-LD's `@list` are
+one term, not an `rdf:first`/`rdf:rest` ladder, and `()` is the empty sequence, not `rdf:nil`. The
+store keeps sequences as terms; SPARQL matches `?s :p (?x 2)`, the position patterns
+`((?e))[i]`, `[?i]` and `[*]`, and `isSEQ`, `SEQLEN`, `SEQ` and `x[i]`; the results formats write
+`{"type": "seq"}` and `<seq>`; Python has `pyoxigraph.Sequence` and JavaScript `oxigraph.sequence()`.
+Part of the [rdf-array](https://github.com/rdf-array/rdf-array) organisation; notes in
+[doc/rdf-array.md](doc/rdf-array.md).
+
+---
+
 # Oxigraph
 
 [![Latest Version](https://img.shields.io/crates/v/oxigraph.svg)](https://crates.io/crates/oxigraph)
