@@ -233,6 +233,19 @@ fn write_json_term<'a>(output: &mut Vec<JsonEvent<'a>>, term: TermRef<'a>) {
             output.push(JsonEvent::EndObject);
             output.push(JsonEvent::EndObject);
         }
+        // rdf-array: {"type": "seq", "value": [ …one term object per element… ]}
+        TermRef::Sequence(sequence) => {
+            output.push(JsonEvent::StartObject);
+            output.push(JsonEvent::ObjectKey("type".into()));
+            output.push(JsonEvent::String("seq".into()));
+            output.push(JsonEvent::ObjectKey("value".into()));
+            output.push(JsonEvent::StartArray);
+            for element in sequence.iter() {
+                write_json_term(output, element);
+            }
+            output.push(JsonEvent::EndArray);
+            output.push(JsonEvent::EndObject);
+        }
     }
 }
 
@@ -863,6 +876,8 @@ struct JsonInnerTermReader {
     predicate: Option<Term>,
     #[cfg(feature = "sparql-12")]
     object: Option<Term>,
+    /// rdf-array: the elements of a "seq" value
+    elements: Option<Vec<Term>>,
 }
 
 #[derive(Default)]
@@ -884,6 +899,8 @@ enum JsonInnerTermReaderState {
     Predicate(Box<JsonInnerTermReader>),
     #[cfg(feature = "sparql-12")]
     Object(Box<JsonInnerTermReader>),
+    InSequence,
+    Element(Box<JsonInnerTermReader>),
 }
 
 enum TermType {
@@ -892,6 +909,7 @@ enum TermType {
     Literal,
     #[cfg(feature = "sparql-12")]
     Triple,
+    Sequence,
 }
 
 impl JsonInnerTermReader {
@@ -1020,8 +1038,9 @@ impl JsonInnerTermReader {
                                         "triple serialization must have a 'subject' key",
                                     )
                                 })? {
-                                    Term::NamedNode(subject) => NamedOrBlankNode::from(subject),
-                                    Term::BlankNode(subject) => NamedOrBlankNode::from(subject),
+                                    Term::NamedNode(subject) => Subject::from(subject),
+                                    Term::BlankNode(subject) => Subject::from(subject),
+                                    Term::Sequence(subject) => Subject::from(subject),
                                     Term::Triple(_) => {
                                         return Err(QueryResultsSyntaxError::msg(
                                             "The 'subject' value cannot be a triple term",
@@ -1054,6 +1073,14 @@ impl JsonInnerTermReader {
                             )
                             .into(),
                         )),
+                        Some(TermType::Sequence) => Ok(Some(
+                            Sequence::from(self.elements.take().ok_or_else(|| {
+                                QueryResultsSyntaxError::msg(
+                                    "seq serialization must have a 'value' array",
+                                )
+                            })?)
+                            .into(),
+                        )),
                     }
                 }
                 _ => unreachable!(),
@@ -1079,6 +1106,10 @@ impl JsonInnerTermReader {
                             self.term_type = Some(TermType::Triple);
                             Ok(None)
                         }
+                        "seq" => {
+                            self.term_type = Some(TermType::Sequence);
+                            Ok(None)
+                        }
                         _ => Err(QueryResultsSyntaxError::msg(format!(
                             "Unexpected term type: '{value}'"
                         ))),
@@ -1096,6 +1127,11 @@ impl JsonInnerTermReader {
                 #[cfg(feature = "sparql-12")]
                 JsonEvent::StartObject => {
                     self.state = JsonInnerTermReaderState::InValue;
+                    Ok(None)
+                }
+                JsonEvent::StartArray => {
+                    self.elements = Some(Vec::new());
+                    self.state = JsonInnerTermReaderState::InSequence;
                     Ok(None)
                 }
                 _ => {
@@ -1189,6 +1225,27 @@ impl JsonInnerTermReader {
                 if let Some(term) = inner_state.read_event(event)? {
                     self.state = JsonInnerTermReaderState::InValue;
                     self.object = Some(term);
+                }
+                Ok(None)
+            }
+            JsonInnerTermReaderState::InSequence => match event {
+                JsonEvent::EndArray => {
+                    self.state = JsonInnerTermReaderState::Middle;
+                    Ok(None)
+                }
+                event => {
+                    let mut reader = Box::<JsonInnerTermReader>::default();
+                    reader.read_event(event)?;
+                    self.state = JsonInnerTermReaderState::Element(reader);
+                    Ok(None)
+                }
+            },
+            JsonInnerTermReaderState::Element(inner_state) => {
+                if let Some(term) = inner_state.read_event(event)? {
+                    self.state = JsonInnerTermReaderState::InSequence;
+                    if let Some(elements) = &mut self.elements {
+                        elements.push(term);
+                    }
                 }
                 Ok(None)
             }

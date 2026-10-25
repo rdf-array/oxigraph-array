@@ -1,7 +1,7 @@
 use crate::{QueryEvaluationError, QuerySolutionIter};
 #[cfg(feature = "sparql-12")]
 use oxrdf::Triple;
-use oxrdf::{BlankNode, GraphName, NamedNode, Quad, Term};
+use oxrdf::{BlankNode, GraphName, NamedNode, Quad, Sequence, Subject, Term};
 use rustc_hash::FxHashMap;
 use sparesults::QuerySolution;
 use spargebra::term::{
@@ -77,13 +77,7 @@ fn fill_quad_pattern(
     bnodes: &mut FxHashMap<BlankNode, BlankNode>,
 ) -> Option<Quad> {
     Some(Quad {
-        subject: match fill_term_or_var(&quad.subject, solution, bnodes)? {
-            Term::NamedNode(node) => node.into(),
-            Term::BlankNode(node) => node.into(),
-            #[cfg(feature = "sparql-12")]
-            Term::Triple(_) => return None,
-            Term::Literal(_) => return None,
-        },
+        subject: Subject::try_from(fill_term_or_var(&quad.subject, solution, bnodes)?).ok()?,
         predicate: fill_named_node_or_var(&quad.predicate, solution)?,
         object: fill_term_or_var(&quad.object, solution, bnodes)?,
         graph_name: fill_graph_name_or_var(&quad.graph_name, solution)?,
@@ -102,6 +96,14 @@ fn fill_term_or_var(
         #[cfg(feature = "sparql-12")]
         TermPattern::Triple(triple) => fill_triple_pattern(triple, solution, bnodes)?.into(),
         TermPattern::Variable(v) => solution.get(v)?.clone(),
+        // rdf-array: blank nodes inside a template sequence are fresh per solution too
+        TermPattern::Sequence(elements) => elements
+            .iter()
+            .map(|e| fill_term_or_var(e, solution, bnodes))
+            .collect::<Option<Sequence>>()?
+            .into(),
+        // The parser rejects position patterns in templates
+        TermPattern::SequencePosition { .. } => return None,
     })
 }
 
@@ -128,6 +130,7 @@ fn fill_graph_name_or_var(term: &GraphNamePattern, solution: &QuerySolution) -> 
             Term::Literal(_) => return None,
             #[cfg(feature = "sparql-12")]
             Term::Triple(_) => return None,
+            Term::Sequence(_) => return None,
         },
     })
 }
@@ -139,26 +142,14 @@ fn fill_triple_pattern(
     bnodes: &mut FxHashMap<BlankNode, BlankNode>,
 ) -> Option<Triple> {
     Some(Triple {
-        subject: match fill_term_or_var(&triple.subject, solution, bnodes)? {
-            Term::NamedNode(node) => node.into(),
-            Term::BlankNode(node) => node.into(),
-            #[cfg(feature = "sparql-12")]
-            Term::Triple(_) => return None,
-            Term::Literal(_) => return None,
-        },
+        subject: Subject::try_from(fill_term_or_var(&triple.subject, solution, bnodes)?).ok()?,
         predicate: fill_named_node_or_var(&triple.predicate, solution)?,
         object: fill_term_or_var(&triple.object, solution, bnodes)?,
     })
 }
 fn fill_ground_quad_pattern(quad: &GroundQuadPattern, solution: &QuerySolution) -> Option<Quad> {
     Some(Quad {
-        subject: match fill_ground_term_or_var(&quad.subject, solution)? {
-            Term::NamedNode(node) => node.into(),
-            Term::BlankNode(node) => node.into(),
-            #[cfg(feature = "sparql-12")]
-            Term::Triple(_) => return None,
-            Term::Literal(_) => return None,
-        },
+        subject: Subject::try_from(fill_ground_term_or_var(&quad.subject, solution)?).ok()?,
         predicate: fill_named_node_or_var(&quad.predicate, solution)?,
         object: fill_ground_term_or_var(&quad.object, solution)?,
         graph_name: fill_graph_name_or_var(&quad.graph_name, solution)?,
@@ -172,6 +163,12 @@ fn fill_ground_term_or_var(term: &GroundTermPattern, solution: &QuerySolution) -
         #[cfg(feature = "sparql-12")]
         GroundTermPattern::Triple(triple) => fill_ground_triple_pattern(triple, solution)?.into(),
         GroundTermPattern::Variable(v) => solution.get(v)?.clone(),
+        GroundTermPattern::Sequence(elements) => elements
+            .iter()
+            .map(|e| fill_ground_term_or_var(e, solution))
+            .collect::<Option<Sequence>>()?
+            .into(),
+        GroundTermPattern::SequencePosition { .. } => return None,
     })
 }
 
@@ -181,13 +178,7 @@ fn fill_ground_triple_pattern(
     solution: &QuerySolution,
 ) -> Option<Triple> {
     Some(Triple {
-        subject: match fill_ground_term_or_var(&triple.subject, solution)? {
-            Term::NamedNode(node) => node.into(),
-            Term::BlankNode(node) => node.into(),
-            #[cfg(feature = "sparql-12")]
-            Term::Triple(_) => return None,
-            Term::Literal(_) => return None,
-        },
+        subject: Subject::try_from(fill_ground_term_or_var(&triple.subject, solution)?).ok()?,
         predicate: fill_named_node_or_var(&triple.predicate, solution)?,
         object: fill_ground_term_or_var(&triple.object, solution)?,
     })

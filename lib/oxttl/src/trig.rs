@@ -9,7 +9,7 @@ use crate::toolkit::{Parser, ReaderIterator, SliceIterator, TurtleParseError, Tu
 use oxiri::{Iri, IriParseError};
 use oxrdf::vocab::{rdf, xsd};
 use oxrdf::{
-    GraphName, GraphNameRef, LiteralRef, NamedNode, NamedNodeRef, NamedOrBlankNode, Quad, QuadRef,
+    GraphName, GraphNameRef, LiteralRef, NamedNode, NamedNodeRef, Quad, QuadRef, Subject,
     TermRef,
 };
 use std::borrow::Cow;
@@ -1049,7 +1049,7 @@ pub struct LowLevelTriGSerializer {
     base_iri: Option<Iri<String>>,
     prelude_written: bool,
     current_graph_name: GraphName,
-    current_subject_predicate: Option<(NamedOrBlankNode, NamedNode)>,
+    current_subject_predicate: Option<(Subject, NamedNode)>,
 }
 
 impl LowLevelTriGSerializer {
@@ -1289,6 +1289,25 @@ impl fmt::Display for TurtleTerm<'_> {
                         base_iri: self.base_iri,
                     }
                 )
+            }
+            // rdf-array: a sequence is written as a collection
+            TermRef::Sequence(sequence) => {
+                if sequence.is_empty() {
+                    return f.write_str("()");
+                }
+                f.write_str("(")?;
+                for element in sequence.iter() {
+                    write!(
+                        f,
+                        " {}",
+                        TurtleTerm {
+                            term: element,
+                            prefixes: self.prefixes,
+                            base_iri: self.base_iri,
+                        }
+                    )?;
+                }
+                f.write_str(" )")
             }
         }
     }

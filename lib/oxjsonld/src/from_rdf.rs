@@ -6,9 +6,7 @@ use oxiri::{Iri, IriParseError};
 #[cfg(feature = "rdf-12")]
 use oxrdf::BaseDirection;
 use oxrdf::vocab::xsd;
-use oxrdf::{
-    GraphName, GraphNameRef, NamedNode, NamedOrBlankNode, NamedOrBlankNodeRef, QuadRef, TermRef,
-};
+use oxrdf::{GraphName, GraphNameRef, NamedNode, NamedOrBlankNodeRef, QuadRef, Subject, SubjectRef, TermRef};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
@@ -22,7 +20,7 @@ use tokio::io::AsyncWrite;
 ///
 /// It does not implement exactly the [RDF as JSON-LD Algorithm](https://www.w3.org/TR/json-ld-api/#serialize-rdf-as-json-ld-algorithm)
 /// to be a streaming serializer but aims at being close to it.
-/// Features like `@json` and `@list` generation are not implemented.
+/// `@json` generation is not implemented; rdf-array: a sequence is written as `@list`.
 ///
 /// ```
 /// use oxrdf::{GraphNameRef, LiteralRef, NamedNodeRef, QuadRef};
@@ -327,7 +325,7 @@ impl<W: AsyncWrite + Unpin> TokioAsyncWriterJsonLdSerializer<W> {
 pub struct InnerJsonLdWriter {
     started: bool,
     current_graph_name: Option<GraphName>,
-    current_subject: Option<NamedOrBlankNode>,
+    current_subject: Option<Subject>,
     current_predicate: Option<NamedNode>,
     emitted_predicates: BTreeSet<String>,
     prefixes: BTreeMap<String, String>,
@@ -418,12 +416,12 @@ impl InnerJsonLdWriter {
                 clippy::allow_attributes
             )]
             output.push(JsonEvent::String(self.id_value(match quad.subject {
-                NamedOrBlankNodeRef::NamedNode(iri) => iri.into(),
-                NamedOrBlankNodeRef::BlankNode(bnode) => bnode.into(),
-                _ => {
+                SubjectRef::NamedNode(iri) => iri.into(),
+                SubjectRef::BlankNode(bnode) => bnode.into(),
+                SubjectRef::Sequence(_) => {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidInput,
-                        "JSON-LD does not support RDF 1.2 yet",
+                        "rdf-array: JSON-LD cannot write a sequence as a subject",
                     ));
                 }
             })));
@@ -509,6 +507,15 @@ impl InnerJsonLdWriter {
                 }
                 output.push(JsonEvent::ObjectKey("@value".into()));
                 output.push(JsonEvent::String(literal.value().into()));
+            }
+            // rdf-array: a sequence is written as @list
+            TermRef::Sequence(sequence) => {
+                output.push(JsonEvent::ObjectKey("@list".into()));
+                output.push(JsonEvent::StartArray);
+                for element in sequence.iter() {
+                    self.serialize_term(element, output)?;
+                }
+                output.push(JsonEvent::EndArray);
             }
             _ => {
                 return Err(io::Error::new(

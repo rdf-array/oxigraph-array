@@ -7,15 +7,19 @@ use oxiri::Iri;
 #[cfg(feature = "rdf-12")]
 use oxrdf::Triple;
 use oxrdf::vocab::{rdf, xsd};
-use oxrdf::{BlankNode, GraphName, Literal, NamedNode, NamedOrBlankNode, Quad, Term};
+use oxrdf::{
+    BlankNode, GraphName, Literal, NamedNode, NamedOrBlankNode, Quad, Sequence, Subject, Term,
+};
 use std::collections::HashMap;
 use std::collections::hash_map::Iter;
 
 pub struct TriGRecognizer {
     stack: Vec<TriGState>,
-    cur_subject: Vec<NamedOrBlankNode>,
+    cur_subject: Vec<Subject>,
     cur_predicate: Vec<NamedNode>,
     cur_object: Vec<Term>,
+    /// rdf-array: the collections being read, each with the depth of `cur_subject` its elements are read at
+    cur_collections: Vec<(usize, Vec<Term>)>,
     cur_graph: GraphName,
     #[cfg(feature = "rdf-12")]
     cur_reifier: Vec<NamedOrBlankNode>,
@@ -45,6 +49,7 @@ impl RuleRecognizer for TriGRecognizer {
         self.cur_subject.clear();
         self.cur_predicate.clear();
         self.cur_object.clear();
+        self.cur_collections.clear();
         #[cfg(feature = "rdf-12")]
         self.cur_reifier.clear();
         self.cur_graph = GraphName::DefaultGraph;
@@ -255,7 +260,7 @@ impl RuleRecognizer for TriGRecognizer {
                         self.cur_graph = term.into();
                         self.stack.push(TriGState::WrappedGraph);
                     } else {
-                        self.cur_subject.push(term);
+                        self.cur_subject.push(term.into());
                         self.stack.push(TriGState::ExpectDot);
                         self.stack.push(TriGState::PredicateObjectList);
                     }
@@ -296,37 +301,26 @@ impl RuleRecognizer for TriGRecognizer {
                         self.recognize_next(TokenOrLineJump::Token(token), context, results, errors)
                     }
                 }
+                // rdf-array: a collection is one sequence term
                 TriGState::SubjectCollectionBeginning => {
                     if let N3Token::Punctuation(")") = token {
-                        self.cur_subject.push(rdf::NIL.into());
+                        self.cur_subject.push(Sequence::empty().into());
                         self
                     } else {
-                        let root = BlankNode::default();
-                        self.cur_subject.push(root.clone().into());
-                        self.cur_subject.push(root.into());
-                        self.cur_predicate.push(rdf::FIRST.into());
+                        self.cur_collections
+                            .push((self.cur_subject.len(), Vec::new()));
                         self.stack.push(TriGState::SubjectCollectionPossibleEnd);
                         self.stack.push(TriGState::Object);
                         self.recognize_next(TokenOrLineJump::Token(token), context, results, errors)
                     }
                 }
                 TriGState::SubjectCollectionPossibleEnd => {
-                    let old = self.cur_subject.pop().unwrap();
-                    self.cur_object.pop();
                     if let N3Token::Punctuation(")") = token {
-                        self.cur_predicate.pop();
-                        results.push(Quad::new(old, rdf::REST, rdf::NIL, self.cur_graph.clone()));
+                        let (_, elements) = self.cur_collections.pop().unwrap();
+                        self.cur_subject.push(Sequence::from(elements).into());
                         self
                     } else {
-                        let new = BlankNode::default();
-                        results.push(Quad::new(
-                            old,
-                            rdf::REST,
-                            new.clone(),
-                            self.cur_graph.clone(),
-                        ));
-                        self.cur_subject.push(new.into());
-                        self.stack.push(TriGState::ObjectCollectionPossibleEnd);
+                        self.stack.push(TriGState::SubjectCollectionPossibleEnd);
                         self.stack.push(TriGState::Object);
                         self.recognize_next(TokenOrLineJump::Token(token), context, results, errors)
                     }
@@ -571,7 +565,7 @@ impl RuleRecognizer for TriGRecognizer {
                             ));
                             reifier.into()
                         };
-                        self.cur_subject.push(reifier);
+                        self.cur_subject.push(reifier.into());
                         self.stack.push(TriGState::AnnotationEnd { with_reifier });
                         self.stack.push(TriGState::PredicateObjectList);
                         self
@@ -755,36 +749,24 @@ impl RuleRecognizer for TriGRecognizer {
                 }
                 TriGState::ObjectCollectionBeginning => {
                     if let N3Token::Punctuation(")") = token {
-                        self.cur_object.push(rdf::NIL.into());
+                        self.cur_object.push(Sequence::empty().into());
                         self.emit_quad(results);
                         self
                     } else {
-                        let root = BlankNode::default();
-                        self.cur_object.push(root.clone().into());
-                        self.emit_quad(results);
-                        self.cur_subject.push(root.into());
-                        self.cur_predicate.push(rdf::FIRST.into());
+                        self.cur_collections
+                            .push((self.cur_subject.len(), Vec::new()));
                         self.stack.push(TriGState::ObjectCollectionPossibleEnd);
                         self.stack.push(TriGState::Object);
                         self.recognize_next(TokenOrLineJump::Token(token), context, results, errors)
                     }
                 }
                 TriGState::ObjectCollectionPossibleEnd => {
-                    let old = self.cur_subject.pop().unwrap();
-                    self.cur_object.pop();
                     if let N3Token::Punctuation(")") = token {
-                        self.cur_predicate.pop();
-                        results.push(Quad::new(old, rdf::REST, rdf::NIL, self.cur_graph.clone()));
+                        let (_, elements) = self.cur_collections.pop().unwrap();
+                        self.cur_object.push(Sequence::from(elements).into());
+                        self.emit_quad(results);
                         self
                     } else {
-                        let new = BlankNode::default();
-                        results.push(Quad::new(
-                            old,
-                            rdf::REST,
-                            new.clone(),
-                            self.cur_graph.clone(),
-                        ));
-                        self.cur_subject.push(new.into());
                         self.stack.push(TriGState::ObjectCollectionPossibleEnd);
                         self.stack.push(TriGState::Object);
                         self.recognize_next(TokenOrLineJump::Token(token), context, results, errors)
@@ -896,7 +878,7 @@ impl RuleRecognizer for TriGRecognizer {
                 // [29] reifiedTriple 	::= 	'<<' rtSubject verb rtObject reifier? '>>'
                 #[cfg(feature = "rdf-12")]
                 TriGState::SubjectReifiedTripleEnd => {
-                    self.cur_subject.push(self.cur_reifier.pop().unwrap());
+                    self.cur_subject.push(self.cur_reifier.pop().unwrap().into());
                     if token == N3Token::Punctuation(">>") {
                         self
                     } else {
@@ -1260,6 +1242,7 @@ impl TriGRecognizer {
                 cur_subject: Vec::new(),
                 cur_predicate: Vec::new(),
                 cur_object: Vec::new(),
+                cur_collections: Vec::new(),
                 cur_graph: GraphName::DefaultGraph,
                 #[cfg(feature = "rdf-12")]
                 cur_reifier: Vec::new(),
@@ -1284,11 +1267,19 @@ impl TriGRecognizer {
         self.cur_subject.clear();
         self.cur_predicate.clear();
         self.cur_object.clear();
+        self.cur_collections.clear();
         self.cur_graph = GraphName::DefaultGraph;
         self
     }
 
     fn emit_quad(&mut self, results: &mut Vec<Quad>) {
+        // rdf-array: an object read at a collection's own depth is one of its elements
+        if let Some((depth, elements)) = self.cur_collections.last_mut() {
+            if *depth == self.cur_subject.len() {
+                elements.push(self.cur_object.pop().unwrap());
+                return;
+            }
+        }
         results.push(Quad::new(
             self.cur_subject.last().unwrap().clone(),
             self.cur_predicate.last().unwrap().clone(),

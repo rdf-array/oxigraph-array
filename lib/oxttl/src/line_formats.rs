@@ -6,19 +6,28 @@ use crate::{MAX_BUFFER_SIZE, MIN_BUFFER_SIZE};
 #[cfg(feature = "rdf-12")]
 use oxrdf::Triple;
 use oxrdf::vocab::rdf;
-use oxrdf::{BlankNode, GraphName, Literal, NamedNode, NamedOrBlankNode, Quad, Term};
+use oxrdf::{BlankNode, GraphName, Literal, NamedNode, Quad, Sequence, Subject, Term};
 
 pub struct NQuadsRecognizer {
     stack: Vec<NQuadsState>,
-    subjects: Vec<NamedOrBlankNode>,
+    subjects: Vec<Subject>,
     predicates: Vec<NamedNode>,
     objects: Vec<Term>,
+    /// rdf-array: the sequences being read, innermost last
+    sequences: Vec<Vec<Term>>,
     lenient: bool,
 }
 
 pub struct NQuadsRecognizerContext {
     with_graph_name: bool,
     lexer_options: N3LexerOptions,
+}
+
+#[derive(Clone, Copy)]
+enum SequencePosition {
+    Subject,
+    Object,
+    Element,
 }
 
 enum NQuadsState {
@@ -29,10 +38,18 @@ enum NQuadsState {
     ExpectDot,
     ExpectLiteralAnnotationOrGraphNameOrDot {
         value: String,
+        in_sequence: bool,
     },
     ExpectLiteralDatatype {
         value: String,
+        in_sequence: bool,
     },
+    /// rdf-array: an element of a sequence, or its closing ')'
+    ExpectSequenceElement,
+    /// rdf-array: where the sequence being read goes when it closes
+    AfterSequence(SequencePosition),
+    #[cfg(feature = "rdf-12")]
+    AfterQuotedTripleInSequence,
     ExpectLineJump,
     RecoverToLineJump,
     #[cfg(feature = "rdf-12")]
@@ -50,6 +67,7 @@ impl RuleRecognizer for NQuadsRecognizer {
         self.subjects.clear();
         self.predicates.clear();
         self.objects.clear();
+        self.sequences.clear();
         self
     }
 
@@ -86,12 +104,19 @@ impl RuleRecognizer for NQuadsRecognizer {
                         self.stack.push(NQuadsState::ExpectPredicate);
                         self
                     }
+                    N3Token::Punctuation("(") => {
+                        self.sequences.push(Vec::new());
+                        self.stack
+                            .push(NQuadsState::AfterSequence(SequencePosition::Subject));
+                        self.stack.push(NQuadsState::ExpectSequenceElement);
+                        self
+                    }
                     _ => self.error(
                         context,
                         results,
                         errors,
                         TokenOrLineJump::Token(token),
-                        "The subject of a triple must be an IRI or a blank node",
+                        "The subject of a triple must be an IRI, a blank node or a sequence",
                     ),
                 }
             }
@@ -145,7 +170,10 @@ impl RuleRecognizer for NQuadsRecognizer {
                     }
                     N3Token::String(value) => {
                         self.stack
-                            .push(NQuadsState::ExpectLiteralAnnotationOrGraphNameOrDot { value });
+                            .push(NQuadsState::ExpectLiteralAnnotationOrGraphNameOrDot {
+                                value,
+                                in_sequence: false,
+                            });
                         self
                     }
                     #[cfg(feature = "rdf-12")]
@@ -154,66 +182,71 @@ impl RuleRecognizer for NQuadsRecognizer {
                         self.stack.push(NQuadsState::ExpectSubject);
                         self
                     }
+                    N3Token::Punctuation("(") => {
+                        self.sequences.push(Vec::new());
+                        self.stack
+                            .push(NQuadsState::AfterSequence(SequencePosition::Object));
+                        self.stack.push(NQuadsState::ExpectSequenceElement);
+                        self
+                    }
                     _ => self.error(
                         context,
                         results,
                         errors,
                         TokenOrLineJump::Token(token),
-                        "The object of a triple must be an IRI, a blank node or a literal",
+                        "The object of a triple must be an IRI, a blank node, a literal or a sequence",
                     ),
                 }
             }
-            NQuadsState::ExpectLiteralAnnotationOrGraphNameOrDot { value } => match token {
-                #[cfg(feature = "rdf-12")]
-                TokenOrLineJump::Token(N3Token::LangTag {
-                    language,
-                    direction,
-                }) => {
-                    self.objects.push(
-                        if let Some(direction) = direction {
-                            Literal::new_directional_language_tagged_literal_unchecked(
-                                value,
-                                language.to_ascii_lowercase(),
-                                direction,
-                            )
-                        } else {
+            NQuadsState::ExpectLiteralAnnotationOrGraphNameOrDot { value, in_sequence } => {
+                match token {
+                    #[cfg(feature = "rdf-12")]
+                    TokenOrLineJump::Token(N3Token::LangTag {
+                        language,
+                        direction,
+                    }) => {
+                        self.object_done(
+                            if let Some(direction) = direction {
+                                Literal::new_directional_language_tagged_literal_unchecked(
+                                    value,
+                                    language.to_ascii_lowercase(),
+                                    direction,
+                                )
+                            } else {
+                                Literal::new_language_tagged_literal_unchecked(
+                                    value,
+                                    language.to_ascii_lowercase(),
+                                )
+                            }
+                            .into(),
+                            in_sequence,
+                        );
+                        self
+                    }
+                    #[cfg(not(feature = "rdf-12"))]
+                    TokenOrLineJump::Token(N3Token::LangTag { language }) => {
+                        self.object_done(
                             Literal::new_language_tagged_literal_unchecked(
                                 value,
                                 language.to_ascii_lowercase(),
                             )
-                        }
-                        .into(),
-                    );
-                    self.stack
-                        .push(NQuadsState::ExpectPossibleGraphOrEndOfQuotedTriple);
-                    self
+                            .into(),
+                            in_sequence,
+                        );
+                        self
+                    }
+                    TokenOrLineJump::Token(N3Token::Punctuation("^^")) => {
+                        self.stack
+                            .push(NQuadsState::ExpectLiteralDatatype { value, in_sequence });
+                        self
+                    }
+                    _ => {
+                        self.object_done(Literal::new_simple_literal(value).into(), in_sequence);
+                        self.recognize_next(token, context, results, errors)
+                    }
                 }
-                #[cfg(not(feature = "rdf-12"))]
-                TokenOrLineJump::Token(N3Token::LangTag { language }) => {
-                    self.objects.push(
-                        Literal::new_language_tagged_literal_unchecked(
-                            value,
-                            language.to_ascii_lowercase(),
-                        )
-                        .into(),
-                    );
-                    self.stack
-                        .push(NQuadsState::ExpectPossibleGraphOrEndOfQuotedTriple);
-                    self
-                }
-                TokenOrLineJump::Token(N3Token::Punctuation("^^")) => {
-                    self.stack
-                        .push(NQuadsState::ExpectLiteralDatatype { value });
-                    self
-                }
-                _ => {
-                    self.objects.push(Literal::new_simple_literal(value).into());
-                    self.stack
-                        .push(NQuadsState::ExpectPossibleGraphOrEndOfQuotedTriple);
-                    self.recognize_next(token, context, results, errors)
-                }
-            },
-            NQuadsState::ExpectLiteralDatatype { value } => {
+            }
+            NQuadsState::ExpectLiteralDatatype { value, in_sequence } => {
                 let TokenOrLineJump::Token(token) = token else {
                     return self.error(
                         context,
@@ -232,11 +265,10 @@ impl RuleRecognizer for NQuadsRecognizer {
                         if !self.lenient && d == rdf::DIR_LANG_STRING.as_str() {
                             errors.push("The datatype of a literal without a base direction must not be rdf:dirLangString".into());
                         }
-                        self.objects.push(
+                        self.object_done(
                             Literal::new_typed_literal(value, NamedNode::new_unchecked(d)).into(),
+                            in_sequence,
                         );
-                        self.stack
-                            .push(NQuadsState::ExpectPossibleGraphOrEndOfQuotedTriple);
                         self
                     }
                     _ => self.error(
@@ -247,6 +279,88 @@ impl RuleRecognizer for NQuadsRecognizer {
                         "A literal datatype must be an IRI",
                     ),
                 }
+            }
+            // rdf-array: ( e1 e2 ... )
+            NQuadsState::ExpectSequenceElement => {
+                let TokenOrLineJump::Token(token) = token else {
+                    return self.error(
+                        context,
+                        results,
+                        errors,
+                        token,
+                        "line jumps are not allowed inside of sequences",
+                    );
+                };
+                match token {
+                    N3Token::Punctuation(")") => {
+                        let sequence = Sequence::from(self.sequences.pop().unwrap());
+                        match self.stack.pop() {
+                            Some(NQuadsState::AfterSequence(SequencePosition::Subject)) => {
+                                self.subjects.push(sequence.into());
+                                self.stack.push(NQuadsState::ExpectPredicate);
+                            }
+                            Some(NQuadsState::AfterSequence(SequencePosition::Object)) => {
+                                self.objects.push(sequence.into());
+                                self.stack
+                                    .push(NQuadsState::ExpectPossibleGraphOrEndOfQuotedTriple);
+                            }
+                            Some(NQuadsState::AfterSequence(SequencePosition::Element)) => {
+                                self.object_done(sequence.into(), true);
+                            }
+                            _ => unreachable!("a sequence is always read for a position"),
+                        }
+                        self
+                    }
+                    N3Token::IriRef(o) => {
+                        self.object_done(NamedNode::new_unchecked(o).into(), true);
+                        self
+                    }
+                    N3Token::BlankNodeLabel(o) => {
+                        self.object_done(BlankNode::new_unchecked(o).into(), true);
+                        self
+                    }
+                    N3Token::String(value) => {
+                        self.stack
+                            .push(NQuadsState::ExpectLiteralAnnotationOrGraphNameOrDot {
+                                value,
+                                in_sequence: true,
+                            });
+                        self
+                    }
+                    N3Token::Punctuation("(") => {
+                        self.sequences.push(Vec::new());
+                        self.stack
+                            .push(NQuadsState::AfterSequence(SequencePosition::Element));
+                        self.stack.push(NQuadsState::ExpectSequenceElement);
+                        self
+                    }
+                    #[cfg(feature = "rdf-12")]
+                    N3Token::Punctuation("<<(") => {
+                        self.stack.push(NQuadsState::AfterQuotedTripleInSequence);
+                        self.stack.push(NQuadsState::ExpectSubject);
+                        self
+                    }
+                    _ => self.error(
+                        context,
+                        results,
+                        errors,
+                        TokenOrLineJump::Token(token),
+                        "The element of a sequence must be an IRI, a blank node, a literal or a sequence",
+                    ),
+                }
+            }
+            NQuadsState::AfterSequence(_) => {
+                unreachable!("the closing ')' of a sequence consumes this state")
+            }
+            #[cfg(feature = "rdf-12")]
+            NQuadsState::AfterQuotedTripleInSequence => {
+                let triple = Triple {
+                    subject: self.subjects.pop().unwrap(),
+                    predicate: self.predicates.pop().unwrap(),
+                    object: self.objects.pop().unwrap(),
+                };
+                self.object_done(triple.into(), true);
+                self.recognize_next(token, context, results, errors)
             }
             NQuadsState::ExpectPossibleGraphOrEndOfQuotedTriple => {
                 if self.stack.is_empty() {
@@ -347,7 +461,10 @@ impl RuleRecognizer for NQuadsRecognizer {
                 self.emit_quad(results, GraphName::DefaultGraph);
                 errors.push("Triples must be followed by a dot".into())
             }
-            [NQuadsState::ExpectLiteralAnnotationOrGraphNameOrDot { value }] => {
+            [NQuadsState::ExpectLiteralAnnotationOrGraphNameOrDot {
+                value,
+                in_sequence: false,
+            }] => {
                 self.objects.push(Literal::new_simple_literal(value).into());
                 self.emit_quad(results, GraphName::DefaultGraph);
                 errors.push("Triples must be followed by a dot".into())
@@ -382,6 +499,7 @@ impl NQuadsRecognizer {
                 subjects: Vec::new(),
                 predicates: Vec::new(),
                 objects: Vec::new(),
+                sequences: Vec::new(),
                 lenient,
             },
             NQuadsRecognizerContext {
@@ -405,6 +523,18 @@ impl NQuadsRecognizer {
         match token {
             TokenOrLineJump::Token(_) => this,
             TokenOrLineJump::LineJump => this.recognize_next(token, context, results, errors), /* We immediately recover */
+        }
+    }
+
+    /// An object or a sequence element has been read.
+    fn object_done(&mut self, term: Term, in_sequence: bool) {
+        if in_sequence {
+            self.sequences.last_mut().unwrap().push(term);
+            self.stack.push(NQuadsState::ExpectSequenceElement);
+        } else {
+            self.objects.push(term);
+            self.stack
+                .push(NQuadsState::ExpectPossibleGraphOrEndOfQuotedTriple);
         }
     }
 

@@ -1,6 +1,7 @@
 use crate::blank_node::BlankNode;
 use crate::literal::Literal;
 use crate::named_node::NamedNode;
+use crate::sequence::Sequence;
 use crate::{BlankNodeRef, LiteralRef, NamedNodeRef};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize, Serializer};
@@ -161,6 +162,323 @@ impl<'a> From<NamedOrBlankNodeRef<'a>> for NamedOrBlankNode {
     }
 }
 
+/// rdf-array: the owned union of the terms that may be a triple's [subject](https://www.w3.org/TR/rdf11-concepts/#dfn-subject):
+/// [IRIs](https://www.w3.org/TR/rdf11-concepts/#dfn-iri), [blank nodes](https://www.w3.org/TR/rdf11-concepts/#dfn-blank-node)
+/// and [sequences](Sequence).
+#[derive(Eq, PartialEq, Debug, Clone, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", serde(tag = "type", rename_all = "lowercase"))]
+pub enum Subject {
+    #[cfg_attr(feature = "serde", serde(rename = "uri"))]
+    NamedNode(NamedNode),
+    #[cfg_attr(feature = "serde", serde(rename = "bnode"))]
+    BlankNode(BlankNode),
+    #[cfg_attr(feature = "serde", serde(rename = "seq"))]
+    Sequence(Sequence),
+}
+
+impl Subject {
+    #[inline]
+    pub fn is_named_node(&self) -> bool {
+        self.as_ref().is_named_node()
+    }
+
+    #[inline]
+    pub fn is_blank_node(&self) -> bool {
+        self.as_ref().is_blank_node()
+    }
+
+    #[inline]
+    pub fn is_sequence(&self) -> bool {
+        self.as_ref().is_sequence()
+    }
+
+    #[inline]
+    pub fn as_ref(&self) -> SubjectRef<'_> {
+        match self {
+            Self::NamedNode(node) => SubjectRef::NamedNode(node.as_ref()),
+            Self::BlankNode(node) => SubjectRef::BlankNode(node.as_ref()),
+            Self::Sequence(sequence) => SubjectRef::Sequence(sequence),
+        }
+    }
+}
+
+impl fmt::Display for Subject {
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.as_ref().fmt(f)
+    }
+}
+
+impl From<NamedNode> for Subject {
+    #[inline]
+    fn from(node: NamedNode) -> Self {
+        Self::NamedNode(node)
+    }
+}
+
+impl From<NamedNodeRef<'_>> for Subject {
+    #[inline]
+    fn from(node: NamedNodeRef<'_>) -> Self {
+        node.into_owned().into()
+    }
+}
+
+impl From<BlankNode> for Subject {
+    #[inline]
+    fn from(node: BlankNode) -> Self {
+        Self::BlankNode(node)
+    }
+}
+
+impl From<BlankNodeRef<'_>> for Subject {
+    #[inline]
+    fn from(node: BlankNodeRef<'_>) -> Self {
+        node.into_owned().into()
+    }
+}
+
+impl From<Sequence> for Subject {
+    #[inline]
+    fn from(sequence: Sequence) -> Self {
+        Self::Sequence(sequence)
+    }
+}
+
+impl From<NamedOrBlankNode> for Subject {
+    #[inline]
+    fn from(node: NamedOrBlankNode) -> Self {
+        match node {
+            NamedOrBlankNode::NamedNode(node) => Self::NamedNode(node),
+            NamedOrBlankNode::BlankNode(node) => Self::BlankNode(node),
+        }
+    }
+}
+
+impl From<NamedOrBlankNodeRef<'_>> for Subject {
+    #[inline]
+    fn from(node: NamedOrBlankNodeRef<'_>) -> Self {
+        node.into_owned().into()
+    }
+}
+
+impl TryFrom<Subject> for NamedOrBlankNode {
+    type Error = TryFromTermError;
+
+    #[inline]
+    fn try_from(subject: Subject) -> Result<Self, Self::Error> {
+        match subject {
+            Subject::NamedNode(node) => Ok(Self::NamedNode(node)),
+            Subject::BlankNode(node) => Ok(Self::BlankNode(node)),
+            Subject::Sequence(sequence) => Err(TryFromTermError {
+                term: sequence.into(),
+                target: "NamedOrBlankNode",
+            }),
+        }
+    }
+}
+
+/// rdf-array: the borrowed union of the terms that may be a triple's subject: IRIs, blank nodes and sequences.
+#[derive(Eq, PartialEq, Debug, Clone, Copy, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
+#[cfg_attr(feature = "serde", serde(tag = "type", rename_all = "lowercase"))]
+pub enum SubjectRef<'a> {
+    #[cfg_attr(feature = "serde", serde(rename = "uri"))]
+    NamedNode(NamedNodeRef<'a>),
+    #[cfg_attr(feature = "serde", serde(rename = "bnode"))]
+    BlankNode(BlankNodeRef<'a>),
+    #[cfg_attr(feature = "serde", serde(rename = "seq"))]
+    Sequence(&'a Sequence),
+}
+
+impl<'a> SubjectRef<'a> {
+    #[inline]
+    pub fn is_named_node(&self) -> bool {
+        matches!(self, Self::NamedNode(_))
+    }
+
+    #[inline]
+    pub fn is_blank_node(&self) -> bool {
+        matches!(self, Self::BlankNode(_))
+    }
+
+    #[inline]
+    pub fn is_sequence(&self) -> bool {
+        matches!(self, Self::Sequence(_))
+    }
+
+    /// The subject as an IRI or a blank node, when it is not a sequence.
+    #[inline]
+    pub fn as_named_or_blank_node(self) -> Option<NamedOrBlankNodeRef<'a>> {
+        match self {
+            Self::NamedNode(node) => Some(NamedOrBlankNodeRef::NamedNode(node)),
+            Self::BlankNode(node) => Some(NamedOrBlankNodeRef::BlankNode(node)),
+            Self::Sequence(_) => None,
+        }
+    }
+
+    #[inline]
+    pub fn into_owned(self) -> Subject {
+        match self {
+            Self::NamedNode(node) => Subject::NamedNode(node.into_owned()),
+            Self::BlankNode(node) => Subject::BlankNode(node.into_owned()),
+            Self::Sequence(sequence) => Subject::Sequence(sequence.clone()),
+        }
+    }
+}
+
+impl fmt::Display for SubjectRef<'_> {
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NamedNode(node) => node.fmt(f),
+            Self::BlankNode(node) => node.fmt(f),
+            Self::Sequence(sequence) => sequence.fmt(f),
+        }
+    }
+}
+
+impl<'a> From<NamedNodeRef<'a>> for SubjectRef<'a> {
+    #[inline]
+    fn from(node: NamedNodeRef<'a>) -> Self {
+        Self::NamedNode(node)
+    }
+}
+
+impl<'a> From<&'a NamedNode> for SubjectRef<'a> {
+    #[inline]
+    fn from(node: &'a NamedNode) -> Self {
+        node.as_ref().into()
+    }
+}
+
+impl<'a> From<BlankNodeRef<'a>> for SubjectRef<'a> {
+    #[inline]
+    fn from(node: BlankNodeRef<'a>) -> Self {
+        Self::BlankNode(node)
+    }
+}
+
+impl<'a> From<&'a BlankNode> for SubjectRef<'a> {
+    #[inline]
+    fn from(node: &'a BlankNode) -> Self {
+        node.as_ref().into()
+    }
+}
+
+impl<'a> From<&'a Sequence> for SubjectRef<'a> {
+    #[inline]
+    fn from(sequence: &'a Sequence) -> Self {
+        Self::Sequence(sequence)
+    }
+}
+
+impl<'a> From<NamedOrBlankNodeRef<'a>> for SubjectRef<'a> {
+    #[inline]
+    fn from(node: NamedOrBlankNodeRef<'a>) -> Self {
+        match node {
+            NamedOrBlankNodeRef::NamedNode(node) => Self::NamedNode(node),
+            NamedOrBlankNodeRef::BlankNode(node) => Self::BlankNode(node),
+        }
+    }
+}
+
+impl<'a> From<&'a NamedOrBlankNode> for SubjectRef<'a> {
+    #[inline]
+    fn from(node: &'a NamedOrBlankNode) -> Self {
+        node.as_ref().into()
+    }
+}
+
+impl<'a> From<&'a Subject> for SubjectRef<'a> {
+    #[inline]
+    fn from(node: &'a Subject) -> Self {
+        node.as_ref()
+    }
+}
+
+impl<'a> From<SubjectRef<'a>> for Subject {
+    #[inline]
+    fn from(node: SubjectRef<'a>) -> Self {
+        node.into_owned()
+    }
+}
+
+impl From<Subject> for Term {
+    #[inline]
+    fn from(node: Subject) -> Self {
+        match node {
+            Subject::NamedNode(node) => node.into(),
+            Subject::BlankNode(node) => node.into(),
+            Subject::Sequence(sequence) => sequence.into(),
+        }
+    }
+}
+
+impl From<SubjectRef<'_>> for Term {
+    #[inline]
+    fn from(node: SubjectRef<'_>) -> Self {
+        node.into_owned().into()
+    }
+}
+
+impl<'a> From<SubjectRef<'a>> for TermRef<'a> {
+    #[inline]
+    fn from(node: SubjectRef<'a>) -> Self {
+        match node {
+            SubjectRef::NamedNode(node) => node.into(),
+            SubjectRef::BlankNode(node) => node.into(),
+            SubjectRef::Sequence(sequence) => Self::Sequence(sequence),
+        }
+    }
+}
+
+impl<'a> From<&'a Subject> for TermRef<'a> {
+    #[inline]
+    fn from(node: &'a Subject) -> Self {
+        node.as_ref().into()
+    }
+}
+
+impl TryFrom<Term> for Subject {
+    type Error = TryFromTermError;
+
+    #[inline]
+    fn try_from(term: Term) -> Result<Self, Self::Error> {
+        match term {
+            Term::NamedNode(term) => Ok(Self::NamedNode(term)),
+            Term::BlankNode(term) => Ok(Self::BlankNode(term)),
+            Term::Sequence(term) => Ok(Self::Sequence(term)),
+            Term::Literal(_) => Err(TryFromTermError {
+                term,
+                target: "Subject",
+            }),
+            #[cfg(feature = "rdf-12")]
+            Term::Triple(_) => Err(TryFromTermError {
+                term,
+                target: "Subject",
+            }),
+        }
+    }
+}
+
+impl<'a> TryFrom<TermRef<'a>> for SubjectRef<'a> {
+    type Error = TryFromTermError;
+
+    #[inline]
+    fn try_from(term: TermRef<'a>) -> Result<Self, Self::Error> {
+        match term {
+            TermRef::NamedNode(term) => Ok(Self::NamedNode(term)),
+            TermRef::BlankNode(term) => Ok(Self::BlankNode(term)),
+            TermRef::Sequence(term) => Ok(Self::Sequence(term)),
+            _ => Err(TryFromTermError {
+                term: term.into_owned(),
+                target: "Subject",
+            }),
+        }
+    }
+}
+
 /// An owned RDF [term](https://www.w3.org/TR/rdf11-concepts/#dfn-rdf-term)
 ///
 /// It is the union of [IRIs](https://www.w3.org/TR/rdf11-concepts/#dfn-iri), [blank nodes](https://www.w3.org/TR/rdf11-concepts/#dfn-blank-node), [literals](https://www.w3.org/TR/rdf11-concepts/#dfn-literal) and [triples](https://www.w3.org/TR/rdf11-concepts/#dfn-rdf-triple) (if the `rdf-12` feature is enabled).
@@ -175,6 +493,9 @@ pub enum Term {
     Literal(Literal),
     #[cfg(feature = "rdf-12")]
     Triple(Box<Triple>),
+    /// rdf-array: a sequence of terms.
+    #[cfg_attr(feature = "serde", serde(rename = "seq"))]
+    Sequence(Sequence),
 }
 
 impl Term {
@@ -200,6 +521,11 @@ impl Term {
     }
 
     #[inline]
+    pub fn is_sequence(&self) -> bool {
+        self.as_ref().is_sequence()
+    }
+
+    #[inline]
     pub fn as_ref(&self) -> TermRef<'_> {
         match self {
             Self::NamedNode(node) => TermRef::NamedNode(node.as_ref()),
@@ -207,6 +533,7 @@ impl Term {
             Self::Literal(literal) => TermRef::Literal(literal.as_ref()),
             #[cfg(feature = "rdf-12")]
             Self::Triple(triple) => TermRef::Triple(triple),
+            Self::Sequence(sequence) => TermRef::Sequence(sequence),
         }
     }
 }
@@ -281,6 +608,13 @@ impl From<TripleRef<'_>> for Term {
     #[inline]
     fn from(triple: TripleRef<'_>) -> Self {
         triple.into_owned().into()
+    }
+}
+
+impl From<Sequence> for Term {
+    #[inline]
+    fn from(sequence: Sequence) -> Self {
+        Self::Sequence(sequence)
     }
 }
 
@@ -366,6 +700,10 @@ impl TryFrom<Term> for NamedOrBlankNode {
                 term,
                 target: "Triple",
             }),
+            Term::Sequence(_) => Err(TryFromTermError {
+                term,
+                target: "NamedOrBlankNode",
+            }),
         }
     }
 }
@@ -384,6 +722,9 @@ pub enum TermRef<'a> {
     Literal(LiteralRef<'a>),
     #[cfg(feature = "rdf-12")]
     Triple(&'a Triple),
+    /// rdf-array: a sequence of terms.
+    #[cfg_attr(feature = "serde", serde(rename = "seq"))]
+    Sequence(&'a Sequence),
 }
 
 impl TermRef<'_> {
@@ -409,6 +750,11 @@ impl TermRef<'_> {
     }
 
     #[inline]
+    pub fn is_sequence(&self) -> bool {
+        matches!(self, Self::Sequence(_))
+    }
+
+    #[inline]
     pub fn into_owned(self) -> Term {
         match self {
             Self::NamedNode(node) => Term::NamedNode(node.into_owned()),
@@ -416,6 +762,7 @@ impl TermRef<'_> {
             Self::Literal(literal) => Term::Literal(literal.into_owned()),
             #[cfg(feature = "rdf-12")]
             Self::Triple(triple) => Term::Triple(Box::new(triple.clone())),
+            Self::Sequence(sequence) => Term::Sequence(sequence.clone()),
         }
     }
 }
@@ -431,6 +778,7 @@ impl fmt::Display for TermRef<'_> {
             Self::Triple(triple) => {
                 write!(f, "<<( {triple} )>>")
             }
+            Self::Sequence(sequence) => sequence.fmt(f),
         }
     }
 }
@@ -482,6 +830,13 @@ impl<'a> From<&'a Triple> for TermRef<'a> {
     #[inline]
     fn from(node: &'a Triple) -> Self {
         Self::Triple(node)
+    }
+}
+
+impl<'a> From<&'a Sequence> for TermRef<'a> {
+    #[inline]
+    fn from(sequence: &'a Sequence) -> Self {
+        Self::Sequence(sequence)
     }
 }
 
@@ -537,7 +892,7 @@ impl<'a> From<TermRef<'a>> for Term {
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Triple {
     /// The [subject](https://www.w3.org/TR/rdf11-concepts/#dfn-subject) of this triple.
-    pub subject: NamedOrBlankNode,
+    pub subject: Subject,
 
     /// The [predicate](https://www.w3.org/TR/rdf11-concepts/#dfn-predicate) of this triple.
     #[cfg_attr(feature = "serde", serde(serialize_with = "serialize_predicate"))]
@@ -551,7 +906,7 @@ impl Triple {
     /// Builds an RDF [triple](https://www.w3.org/TR/rdf11-concepts/#dfn-rdf-triple).
     #[inline]
     pub fn new(
-        subject: impl Into<NamedOrBlankNode>,
+        subject: impl Into<Subject>,
         predicate: impl Into<NamedNode>,
         object: impl Into<Term>,
     ) -> Self {
@@ -627,7 +982,7 @@ impl fmt::Display for Triple {
 #[derive(Eq, PartialEq, Debug, Clone, Copy, Hash)]
 pub struct TripleRef<'a> {
     /// The [subject](https://www.w3.org/TR/rdf11-concepts/#dfn-subject) of this triple.
-    pub subject: NamedOrBlankNodeRef<'a>,
+    pub subject: SubjectRef<'a>,
 
     /// The [predicate](https://www.w3.org/TR/rdf11-concepts/#dfn-predicate) of this triple.
     pub predicate: NamedNodeRef<'a>,
@@ -640,7 +995,7 @@ impl<'a> TripleRef<'a> {
     /// Builds an RDF [triple](https://www.w3.org/TR/rdf11-concepts/#dfn-rdf-triple).
     #[inline]
     pub fn new(
-        subject: impl Into<NamedOrBlankNodeRef<'a>>,
+        subject: impl Into<SubjectRef<'a>>,
         predicate: impl Into<NamedNodeRef<'a>>,
         object: impl Into<TermRef<'a>>,
     ) -> Self {
@@ -920,7 +1275,7 @@ impl<'a> From<GraphNameRef<'a>> for GraphName {
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Quad {
     /// The [subject](https://www.w3.org/TR/rdf11-concepts/#dfn-subject) of this triple.
-    pub subject: NamedOrBlankNode,
+    pub subject: Subject,
 
     /// The [predicate](https://www.w3.org/TR/rdf11-concepts/#dfn-predicate) of this triple.
     #[cfg_attr(feature = "serde", serde(serialize_with = "serialize_predicate"))]
@@ -938,7 +1293,7 @@ impl Quad {
     /// Builds an RDF [triple](https://www.w3.org/TR/rdf11-concepts/#dfn-rdf-triple) in an [RDF dataset](https://www.w3.org/TR/rdf11-concepts/#dfn-rdf-dataset).
     #[inline]
     pub fn new(
-        subject: impl Into<NamedOrBlankNode>,
+        subject: impl Into<Subject>,
         predicate: impl Into<NamedNode>,
         object: impl Into<Term>,
         graph_name: impl Into<GraphName>,
@@ -1000,7 +1355,7 @@ impl From<Quad> for Triple {
 #[derive(Eq, PartialEq, Debug, Clone, Copy, Hash)]
 pub struct QuadRef<'a> {
     /// The [subject](https://www.w3.org/TR/rdf11-concepts/#dfn-subject) of this triple.
-    pub subject: NamedOrBlankNodeRef<'a>,
+    pub subject: SubjectRef<'a>,
 
     /// The [predicate](https://www.w3.org/TR/rdf11-concepts/#dfn-predicate) of this triple.
     pub predicate: NamedNodeRef<'a>,
@@ -1016,7 +1371,7 @@ impl<'a> QuadRef<'a> {
     /// Builds an RDF [triple](https://www.w3.org/TR/rdf11-concepts/#dfn-rdf-triple) in an [RDF dataset](https://www.w3.org/TR/rdf11-concepts/#dfn-rdf-dataset).
     #[inline]
     pub fn new(
-        subject: impl Into<NamedOrBlankNodeRef<'a>>,
+        subject: impl Into<SubjectRef<'a>>,
         predicate: impl Into<NamedNodeRef<'a>>,
         object: impl Into<TermRef<'a>>,
         graph_name: impl Into<GraphNameRef<'a>>,

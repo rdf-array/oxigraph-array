@@ -5,7 +5,7 @@ use md5::{Digest, Md5};
 use oxiri::Iri;
 use oxrdf::vocab::{rdf, xsd};
 #[cfg(feature = "sparql-12")]
-use oxrdf::{BaseDirection, NamedOrBlankNode};
+use oxrdf::BaseDirection;
 use oxrdf::{BlankNode, Literal, NamedNode, Term, Variable};
 #[cfg(feature = "sep-0002")]
 use oxsdatatypes::{Date, DayTimeDuration, Duration, Time, TimezoneOffset, YearMonthDuration};
@@ -473,6 +473,7 @@ pub fn build_expression_evaluator<'a, C: ExpressionEvaluatorContext<'a>>(
                         Term::Literal(term) => term.destruct().0,
                         #[cfg(feature = "sparql-12")]
                         Term::Triple(_) => return None,
+                        Term::Sequence(_) => return None,
                     }))
                 })
             }
@@ -488,6 +489,7 @@ pub fn build_expression_evaluator<'a, C: ExpressionEvaluatorContext<'a>>(
                         }
                         #[cfg(feature = "sparql-12")]
                         ExpressionTerm::Triple(_) => return None,
+                        ExpressionTerm::Sequence(_) => return None,
                         _ => String::new(),
                     }))
                 })
@@ -537,6 +539,7 @@ pub fn build_expression_evaluator<'a, C: ExpressionEvaluatorContext<'a>>(
                         }
                         #[cfg(feature = "sparql-12")]
                         ExpressionTerm::Triple(_) => return None,
+                        ExpressionTerm::Sequence(_) => return None,
                         _ => String::new(),
                     }))
                 })
@@ -583,6 +586,7 @@ pub fn build_expression_evaluator<'a, C: ExpressionEvaluatorContext<'a>>(
                         }
                         #[cfg(feature = "sparql-12")]
                         ExpressionTerm::Triple(_) => return None,
+                        ExpressionTerm::Sequence(_) => return None,
                     }))
                 })
             }
@@ -1326,6 +1330,47 @@ pub fn build_expression_evaluator<'a, C: ExpressionEvaluatorContext<'a>>(
                 let e = build_expression_evaluator(&parameters[0], context)?;
                 Rc::new(move |tuple| Some(matches!(e(tuple)?, ExpressionTerm::Triple(_)).into()))
             }
+            // rdf-array: the sequence functions
+            Function::IsSequence => {
+                let e = build_expression_evaluator(&parameters[0], context)?;
+                Rc::new(move |tuple| Some(matches!(e(tuple)?, ExpressionTerm::Sequence(_)).into()))
+            }
+            Function::SequenceLength => {
+                let e = build_expression_evaluator(&parameters[0], context)?;
+                Rc::new(move |tuple| {
+                    let ExpressionTerm::Sequence(elements) = e(tuple)? else {
+                        return None;
+                    };
+                    Some(ExpressionTerm::IntegerLiteral(Integer::from(
+                        i64::try_from(elements.len()).ok()?,
+                    )))
+                })
+            }
+            Function::Sequence => {
+                let args = parameters
+                    .iter()
+                    .map(|e| build_expression_evaluator(e, context))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Rc::new(move |tuple| {
+                    Some(ExpressionTerm::Sequence(
+                        args.iter().map(|e| e(tuple)).collect::<Option<Vec<_>>>()?,
+                    ))
+                })
+            }
+            Function::SequenceIndex => {
+                let sequence = build_expression_evaluator(&parameters[0], context)?;
+                let index = build_expression_evaluator(&parameters[1], context)?;
+                Rc::new(move |tuple| {
+                    let ExpressionTerm::Sequence(elements) = sequence(tuple)? else {
+                        return None;
+                    };
+                    let ExpressionTerm::IntegerLiteral(index) = index(tuple)? else {
+                        return None;
+                    };
+                    let index = usize::try_from(i64::from(index)).ok()?.checked_sub(1)?;
+                    elements.into_iter().nth(index)
+                })
+            }
             Function::Custom(function_name) => {
                 if let Some(function) = context.custom_functions().get(function_name).cloned() {
                     let args = parameters
@@ -1366,6 +1411,7 @@ pub fn build_expression_evaluator<'a, C: ExpressionEvaluatorContext<'a>>(
                                 Term::Literal(term) => term.destruct().0,
                                 #[cfg(feature = "sparql-12")]
                                 Term::Triple(_) => return None,
+                                Term::Sequence(_) => return None,
                             }
                         )))
                     }
@@ -1806,6 +1852,7 @@ fn equals(a: &ExpressionTerm, b: &ExpressionTerm) -> Option<bool> {
             ExpressionTerm::DirLangStringLiteral { .. } => Some(false),
             #[cfg(feature = "sparql-12")]
             ExpressionTerm::Triple(_) => Some(false),
+            ExpressionTerm::Sequence(_) => Some(false),
             _ => None,
         },
         ExpressionTerm::BooleanLiteral(a) => match b {
@@ -1923,6 +1970,24 @@ fn equals(a: &ExpressionTerm, b: &ExpressionTerm) -> Option<bool> {
             } else {
                 Some(false)
             }
+        }
+        // rdf-array: sequences are equal when their elements are, pairwise
+        ExpressionTerm::Sequence(a) => {
+            let ExpressionTerm::Sequence(b) = b else {
+                return Some(false);
+            };
+            if a.len() != b.len() {
+                return Some(false);
+            }
+            let mut result = Some(true);
+            for (a, b) in a.iter().zip(b) {
+                match equals(a, b) {
+                    Some(true) => (),
+                    Some(false) => return Some(false),
+                    None => result = None,
+                }
+            }
+            result
         }
     }
 }
@@ -2111,18 +2176,8 @@ pub fn partial_cmp_literals(a: &ExpressionTerm, b: &ExpressionTerm) -> Option<Or
 #[cfg(feature = "sparql-12")]
 fn partial_cmp_triples(a: &ExpressionTriple, b: &ExpressionTriple) -> Option<Ordering> {
     // We compare subjects
-    match (&a.subject, &b.subject) {
-        (NamedOrBlankNode::NamedNode(a), NamedOrBlankNode::NamedNode(b)) => {
-            if a != b {
-                return None;
-            }
-        }
-        (NamedOrBlankNode::BlankNode(a), NamedOrBlankNode::BlankNode(b)) => {
-            if a != b {
-                return None;
-            }
-        }
-        _ => return None,
+    if a.subject != b.subject {
+        return None;
     }
     if a.predicate != b.predicate {
         return None;

@@ -1,7 +1,7 @@
 use crate::algebra::{Expression, GraphPattern};
 use oxrdf::Variable;
 use spargebra::algebra::Function;
-use spargebra::term::{GroundTerm, GroundTermPattern, NamedNodePattern};
+use spargebra::term::{GroundTerm, GroundTermPattern, NamedNodePattern, SequencePosition};
 use std::collections::HashMap;
 use std::ops::{BitAnd, BitOr};
 
@@ -125,6 +125,7 @@ pub fn infer_graph_pattern_types(
                         Some(GroundTerm::Literal(_)) => t.literal = true,
                         #[cfg(feature = "sparql-12")]
                         Some(GroundTerm::Triple(_)) => t.triple = true,
+                        Some(GroundTerm::Sequence(_)) => t.sequence = true,
                         None => t.undef = true,
                     }
                 }
@@ -164,6 +165,18 @@ fn add_ground_term_pattern_types(
                 VariableType::SUBJECT
             },
         )
+    }
+    // rdf-array: the elements of a sequence pattern may be any term
+    if let GroundTermPattern::Sequence(elements) = pattern {
+        for element in elements {
+            add_ground_term_pattern_types(element, types, true);
+        }
+    }
+    if let GroundTermPattern::SequencePosition { element, position } = pattern {
+        add_ground_term_pattern_types(element, types, true);
+        if let SequencePosition::Variable(v) = position {
+            types.intersect_variable_with(v.clone(), VariableType::LITERAL)
+        }
     }
     #[cfg(feature = "sparql-12")]
     if let GroundTermPattern::Triple(t) = pattern {
@@ -303,6 +316,15 @@ pub fn infer_expression_type(expression: &Expression, types: &VariableTypes) -> 
         }
         #[cfg(feature = "sparql-12")]
         Expression::FunctionCall(Function::Object, _) => VariableType::TERM | VariableType::UNDEF,
+        Expression::FunctionCall(Function::IsSequence | Function::SequenceLength, _) => {
+            VariableType::LITERAL | VariableType::UNDEF
+        }
+        Expression::FunctionCall(Function::Sequence, _) => {
+            VariableType::SEQUENCE | VariableType::UNDEF
+        }
+        Expression::FunctionCall(Function::SequenceIndex, _) => {
+            VariableType::TERM | VariableType::UNDEF
+        }
         Expression::FunctionCall(Function::Custom(_), _) => VariableType::ANY,
     }
 }
@@ -376,6 +398,8 @@ pub struct VariableType {
     pub literal: bool,
     #[cfg(feature = "sparql-12")]
     pub triple: bool,
+    /// rdf-array
+    pub sequence: bool,
 }
 
 impl VariableType {
@@ -386,6 +410,7 @@ impl VariableType {
         literal: true,
         #[cfg(feature = "sparql-12")]
         triple: true,
+        sequence: true,
     };
     const BLANK_NODE: Self = Self {
         undef: false,
@@ -394,6 +419,7 @@ impl VariableType {
         literal: false,
         #[cfg(feature = "sparql-12")]
         triple: false,
+        sequence: false,
     };
     const LITERAL: Self = Self {
         undef: false,
@@ -402,6 +428,7 @@ impl VariableType {
         literal: true,
         #[cfg(feature = "sparql-12")]
         triple: false,
+        sequence: false,
     };
     const NAMED_NODE: Self = Self {
         undef: false,
@@ -410,6 +437,7 @@ impl VariableType {
         literal: false,
         #[cfg(feature = "sparql-12")]
         triple: false,
+        sequence: false,
     };
     const SUBJECT: Self = Self {
         undef: false,
@@ -418,6 +446,7 @@ impl VariableType {
         literal: false,
         #[cfg(feature = "sparql-12")]
         triple: true,
+        sequence: true,
     };
     const TERM: Self = Self {
         undef: false,
@@ -426,6 +455,7 @@ impl VariableType {
         literal: true,
         #[cfg(feature = "sparql-12")]
         triple: true,
+        sequence: true,
     };
     #[cfg(feature = "sparql-12")]
     const TRIPLE: Self = Self {
@@ -434,6 +464,16 @@ impl VariableType {
         blank_node: false,
         literal: false,
         triple: true,
+        sequence: false,
+    };
+    const SEQUENCE: Self = Self {
+        undef: false,
+        named_node: false,
+        blank_node: false,
+        literal: false,
+        #[cfg(feature = "sparql-12")]
+        triple: false,
+        sequence: true,
     };
     pub const UNDEF: Self = Self {
         undef: true,
@@ -442,6 +482,7 @@ impl VariableType {
         literal: false,
         #[cfg(feature = "sparql-12")]
         triple: false,
+        sequence: false,
     };
 }
 
@@ -456,6 +497,7 @@ impl BitOr for VariableType {
             literal: self.literal || rhs.literal,
             #[cfg(feature = "sparql-12")]
             triple: self.triple || rhs.triple,
+            sequence: self.sequence || rhs.sequence,
         }
     }
 }
@@ -480,6 +522,9 @@ impl BitAnd for VariableType {
             triple: self.triple && rhs.triple
                 || (self.undef && rhs.triple)
                 || (self.triple && rhs.undef),
+            sequence: self.sequence && rhs.sequence
+                || (self.undef && rhs.sequence)
+                || (self.sequence && rhs.undef),
         }
     }
 }

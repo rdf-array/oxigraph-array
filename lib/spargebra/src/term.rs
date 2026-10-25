@@ -1,6 +1,8 @@
 //! Data structures for [RDF 1.1 Concepts](https://www.w3.org/TR/rdf11-concepts/) like IRI, literal or triples.
 
-pub use oxrdf::{BlankNode, Literal, NamedNode, NamedOrBlankNode, Term, Triple, Variable};
+pub use oxrdf::{
+    BlankNode, Literal, NamedNode, NamedOrBlankNode, Sequence, Subject, Term, Triple, Variable,
+};
 use std::fmt;
 use std::fmt::Write;
 
@@ -13,6 +15,25 @@ pub enum GroundTerm {
     Literal(Literal),
     #[cfg(feature = "sparql-12")]
     Triple(Box<GroundTriple>),
+    /// rdf-array: a sequence without blank nodes.
+    Sequence(Vec<GroundTerm>),
+}
+
+/// rdf-array: writes `( e1 e2 … )`, or `()`.
+fn fmt_sequence<T>(
+    elements: &[T],
+    f: &mut impl Write,
+    mut fmt_element: impl FnMut(&T, &mut dyn Write) -> fmt::Result,
+) -> fmt::Result {
+    if elements.is_empty() {
+        return f.write_str("()");
+    }
+    f.write_str("(")?;
+    for element in elements {
+        f.write_str(" ")?;
+        fmt_element(element, f)?;
+    }
+    f.write_str(" )")
 }
 
 impl fmt::Display for GroundTerm {
@@ -27,6 +48,7 @@ impl fmt::Display for GroundTerm {
                 "<<( {} {} {} )>>",
                 triple.subject, triple.predicate, triple.object
             ),
+            Self::Sequence(elements) => fmt_sequence(elements, f, |e, f| write!(f, "{e}")),
         }
     }
 }
@@ -64,6 +86,11 @@ impl TryFrom<Term> for GroundTerm {
             Term::Literal(t) => Ok(t.into()),
             #[cfg(feature = "sparql-12")]
             Term::Triple(t) => Ok(GroundTriple::try_from(*t)?.into()),
+            Term::Sequence(t) => Ok(Self::Sequence(
+                t.into_iter()
+                    .map(Self::try_from)
+                    .collect::<Result<_, _>>()?,
+            )),
         }
     }
 }
@@ -76,6 +103,7 @@ impl From<GroundTerm> for Term {
             GroundTerm::Literal(l) => l.into(),
             #[cfg(feature = "sparql-12")]
             GroundTerm::Triple(t) => Triple::from(*t).into(),
+            GroundTerm::Sequence(t) => Sequence::new(t.into_iter().map(Self::from)).into(),
         }
     }
 }
@@ -118,7 +146,7 @@ impl TryFrom<Triple> for GroundTriple {
     #[inline]
     fn try_from(triple: Triple) -> Result<Self, Self::Error> {
         Ok(Self {
-            subject: if let NamedOrBlankNode::NamedNode(s) = triple.subject {
+            subject: if let Subject::NamedNode(s) = triple.subject {
                 s
             } else {
                 return Err(());
@@ -210,7 +238,7 @@ impl TryFrom<GraphNamePattern> for GraphName {
 /// ```
 #[derive(Eq, PartialEq, Debug, Clone, Hash)]
 pub struct Quad {
-    pub subject: NamedOrBlankNode,
+    pub subject: Subject,
     pub predicate: NamedNode,
     pub object: Term,
     pub graph_name: GraphName,
@@ -332,7 +360,7 @@ impl TryFrom<Quad> for GroundQuad {
     #[inline]
     fn try_from(quad: Quad) -> Result<Self, Self::Error> {
         Ok(Self {
-            subject: if let NamedOrBlankNode::NamedNode(s) = quad.subject {
+            subject: if let Subject::NamedNode(s) = quad.subject {
                 s
             } else {
                 return Err(());
@@ -406,6 +434,35 @@ pub enum TermPattern {
     #[cfg(feature = "sparql-12")]
     Triple(Box<TriplePattern>),
     Variable(Variable),
+    /// rdf-array: a sequence `( e1 e2 … )` whose elements are patterns.
+    Sequence(Vec<TermPattern>),
+    /// rdf-array: the position pattern `((element))[position]`, a sequence with `element` at `position`.
+    SequencePosition {
+        element: Box<TermPattern>,
+        position: SequencePosition,
+    },
+}
+
+/// rdf-array: the position of a position pattern `((element))[position]`.
+#[derive(Eq, PartialEq, Debug, Clone, Hash)]
+pub enum SequencePosition {
+    /// A 1-based position.
+    Index(u64),
+    /// Any position, bound to the variable as a 1-based `xsd:integer`.
+    Variable(Variable),
+    /// `*`: any position.
+    Any,
+}
+
+impl fmt::Display for SequencePosition {
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Index(i) => write!(f, "{i}"),
+            Self::Variable(v) => v.fmt(f),
+            Self::Any => f.write_str("*"),
+        }
+    }
 }
 
 impl TermPattern {
@@ -418,6 +475,30 @@ impl TermPattern {
             #[cfg(feature = "sparql-12")]
             Self::Triple(triple) => triple.fmt_sse(f),
             Self::Variable(var) => write!(f, "{var}"),
+            Self::Sequence(elements) => {
+                f.write_str("(seq")?;
+                for element in elements {
+                    f.write_str(" ")?;
+                    element.fmt_sse(f)?;
+                }
+                f.write_str(")")
+            }
+            Self::SequencePosition { element, position } => {
+                f.write_str("(seqpos ")?;
+                element.fmt_sse(f)?;
+                write!(f, " {position})")
+            }
+        }
+    }
+
+    /// rdf-array: true when the pattern holds no variable and no blank node.
+    pub fn is_ground(&self) -> bool {
+        match self {
+            Self::NamedNode(_) | Self::Literal(_) => true,
+            Self::BlankNode(_) | Self::Variable(_) | Self::SequencePosition { .. } => false,
+            #[cfg(feature = "sparql-12")]
+            Self::Triple(triple) => triple.subject.is_ground() && matches!(triple.predicate, NamedNodePattern::NamedNode(_)) && triple.object.is_ground(),
+            Self::Sequence(elements) => elements.iter().all(Self::is_ground),
         }
     }
 }
@@ -432,6 +513,10 @@ impl fmt::Display for TermPattern {
             #[cfg(feature = "sparql-12")]
             Self::Triple(triple) => write!(f, "<<( {triple} )>>"),
             Self::Variable(var) => var.fmt(f),
+            Self::Sequence(elements) => fmt_sequence(elements, f, |e, f| write!(f, "{e}")),
+            Self::SequencePosition { element, position } => {
+                write!(f, "(({element}))[{position}]")
+            }
         }
     }
 }
@@ -481,6 +566,13 @@ impl From<NamedOrBlankNode> for TermPattern {
     }
 }
 
+impl From<Subject> for TermPattern {
+    #[inline]
+    fn from(subject: Subject) -> Self {
+        Term::from(subject).into()
+    }
+}
+
 impl From<Term> for TermPattern {
     #[inline]
     fn from(term: Term) -> Self {
@@ -490,6 +582,7 @@ impl From<Term> for TermPattern {
             Term::Literal(literal) => literal.into(),
             #[cfg(feature = "sparql-12")]
             Term::Triple(t) => TriplePattern::from(*t).into(),
+            Term::Sequence(t) => Self::Sequence(t.into_iter().map(Into::into).collect()),
         }
     }
 }
@@ -513,6 +606,13 @@ impl From<GroundTermPattern> for TermPattern {
             #[cfg(feature = "sparql-12")]
             GroundTermPattern::Triple(t) => TriplePattern::from(*t).into(),
             GroundTermPattern::Variable(variable) => variable.into(),
+            GroundTermPattern::Sequence(elements) => {
+                Self::Sequence(elements.into_iter().map(Into::into).collect())
+            }
+            GroundTermPattern::SequencePosition { element, position } => Self::SequencePosition {
+                element: Box::new((*element).into()),
+                position,
+            },
         }
     }
 }
@@ -525,10 +625,17 @@ impl TryFrom<TermPattern> for NamedOrBlankNode {
         match term {
             TermPattern::NamedNode(t) => Ok(t.into()),
             TermPattern::BlankNode(t) => Ok(t.into()),
-            #[cfg(feature = "sparql-12")]
-            TermPattern::Triple(_) => Err(()),
-            TermPattern::Literal(_) | TermPattern::Variable(_) => Err(()),
+            _ => Err(()),
         }
+    }
+}
+
+impl TryFrom<TermPattern> for Subject {
+    type Error = ();
+
+    #[inline]
+    fn try_from(term: TermPattern) -> Result<Self, Self::Error> {
+        Self::try_from(Term::try_from(term)?).map_err(|_| ())
     }
 }
 
@@ -543,7 +650,14 @@ impl TryFrom<TermPattern> for Term {
             TermPattern::Literal(t) => Ok(t.into()),
             #[cfg(feature = "sparql-12")]
             TermPattern::Triple(t) => Ok(Triple::try_from(*t)?.into()),
-            TermPattern::Variable(_) => Err(()),
+            TermPattern::Sequence(elements) => Ok(Sequence::from(
+                elements
+                    .into_iter()
+                    .map(Self::try_from)
+                    .collect::<Result<Vec<_>, _>>()?,
+            )
+            .into()),
+            TermPattern::Variable(_) | TermPattern::SequencePosition { .. } => Err(()),
         }
     }
 }
@@ -555,6 +669,13 @@ pub enum GroundTermPattern {
     Variable(Variable),
     #[cfg(feature = "sparql-12")]
     Triple(Box<GroundTriplePattern>),
+    /// rdf-array: a sequence whose elements are patterns without blank nodes.
+    Sequence(Vec<GroundTermPattern>),
+    /// rdf-array: the position pattern `((element))[position]` (only in query patterns, never in templates).
+    SequencePosition {
+        element: Box<GroundTermPattern>,
+        position: SequencePosition,
+    },
 }
 
 impl GroundTermPattern {
@@ -566,6 +687,19 @@ impl GroundTermPattern {
             Self::Variable(var) => write!(f, "{var}"),
             #[cfg(feature = "sparql-12")]
             Self::Triple(triple) => triple.fmt_sse(f),
+            Self::Sequence(elements) => {
+                f.write_str("(seq")?;
+                for element in elements {
+                    f.write_str(" ")?;
+                    element.fmt_sse(f)?;
+                }
+                f.write_str(")")
+            }
+            Self::SequencePosition { element, position } => {
+                f.write_str("(seqpos ")?;
+                element.fmt_sse(f)?;
+                write!(f, " {position})")
+            }
         }
     }
 }
@@ -579,6 +713,10 @@ impl fmt::Display for GroundTermPattern {
             Self::Variable(var) => var.fmt(f),
             #[cfg(feature = "sparql-12")]
             Self::Triple(triple) => write!(f, "<<( {triple} )>>"),
+            Self::Sequence(elements) => fmt_sequence(elements, f, |e, f| write!(f, "{e}")),
+            Self::SequencePosition { element, position } => {
+                write!(f, "(({element}))[{position}]")
+            }
         }
     }
 }
@@ -620,6 +758,9 @@ impl From<GroundTerm> for GroundTermPattern {
             GroundTerm::Literal(literal) => literal.into(),
             #[cfg(feature = "sparql-12")]
             GroundTerm::Triple(triple) => GroundTriplePattern::from(*triple).into(),
+            GroundTerm::Sequence(elements) => {
+                Self::Sequence(elements.into_iter().map(Into::into).collect())
+            }
         }
     }
 }
@@ -646,6 +787,16 @@ impl TryFrom<TermPattern> for GroundTermPattern {
             #[cfg(feature = "sparql-12")]
             TermPattern::Triple(triple) => GroundTriplePattern::try_from(*triple)?.into(),
             TermPattern::Variable(variable) => variable.into(),
+            TermPattern::Sequence(elements) => Self::Sequence(
+                elements
+                    .into_iter()
+                    .map(Self::try_from)
+                    .collect::<Result<_, _>>()?,
+            ),
+            TermPattern::SequencePosition { element, position } => Self::SequencePosition {
+                element: Box::new(Self::try_from(*element)?),
+                position,
+            },
         })
     }
 }

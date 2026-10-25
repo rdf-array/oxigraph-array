@@ -312,6 +312,10 @@ impl fmt::Display for Expression {
                 Self::Exists(p) => write!(f, "NOT EXISTS {{ {p} }}"),
                 e => write!(f, "!{e}"),
             },
+            // rdf-array: x[i]
+            Self::FunctionCall(Function::SequenceIndex, parameters) if parameters.len() == 2 => {
+                write!(f, "({})[{}]", parameters[0], parameters[1])
+            }
             Self::FunctionCall(function, parameters) => {
                 write!(f, "{function}")?;
                 write_arg_list(parameters, f)
@@ -439,6 +443,14 @@ pub enum Function {
     StrLangDir,
     #[cfg(feature = "sep-0002")]
     Adjust,
+    /// rdf-array: `isSEQ(x)`
+    IsSequence,
+    /// rdf-array: `SEQLEN(x)`, the number of elements of a sequence
+    SequenceLength,
+    /// rdf-array: `SEQ(e1, e2, …)`, the sequence of its arguments
+    Sequence,
+    /// rdf-array: `x[i]`, the element at the 1-based position `i`
+    SequenceIndex,
     Custom(NamedNode),
 }
 
@@ -512,6 +524,10 @@ impl Function {
             Function::StrLangDir => f.write_str("strlangdir"),
             #[cfg(feature = "sep-0002")]
             Self::Adjust => f.write_str("adjust"),
+            Self::IsSequence => f.write_str("isseq"),
+            Self::SequenceLength => f.write_str("seqlen"),
+            Self::Sequence => f.write_str("seq"),
+            Self::SequenceIndex => f.write_str("seqat"),
             Self::Custom(iri) => write!(f, "{iri}"),
         }
     }
@@ -586,6 +602,10 @@ impl fmt::Display for Function {
             Function::StrLangDir => f.write_str("STRLANGDIR"),
             #[cfg(feature = "sep-0002")]
             Self::Adjust => f.write_str("ADJUST"),
+            Self::IsSequence => f.write_str("isSEQ"),
+            Self::SequenceLength => f.write_str("SEQLEN"),
+            Self::Sequence => f.write_str("SEQ"),
+            Self::SequenceIndex => f.write_str("SEQAT"),
             Self::Custom(iri) => iri.fmt(f),
         }
     }
@@ -1017,20 +1037,8 @@ impl GraphPattern {
             Self::Path {
                 subject, object, ..
             } => {
-                if let TermPattern::Variable(s) = subject {
-                    callback(s);
-                }
-                #[cfg(feature = "sparql-12")]
-                if let TermPattern::Triple(s) = subject {
-                    lookup_triple_pattern_variables(s, callback)
-                }
-                if let TermPattern::Variable(o) = object {
-                    callback(o);
-                }
-                #[cfg(feature = "sparql-12")]
-                if let TermPattern::Triple(o) = object {
-                    lookup_triple_pattern_variables(o, callback)
-                }
+                lookup_term_pattern_variables(subject, callback);
+                lookup_term_pattern_variables(object, callback);
             }
             Self::Join { left, right }
             | Self::LeftJoin { left, right, .. }
@@ -1092,20 +1100,8 @@ impl GraphPattern {
             Self::Path {
                 subject, object, ..
             } => {
-                if let TermPattern::Variable(s) = subject {
-                    callback(s);
-                }
-                #[cfg(feature = "sparql-12")]
-                if let TermPattern::Triple(s) = subject {
-                    lookup_triple_pattern_variables(s, callback)
-                }
-                if let TermPattern::Variable(o) = object {
-                    callback(o);
-                }
-                #[cfg(feature = "sparql-12")]
-                if let TermPattern::Triple(o) = object {
-                    lookup_triple_pattern_variables(o, callback)
-                }
+                lookup_term_pattern_variables(subject, callback);
+                lookup_term_pattern_variables(object, callback);
             }
             Self::Join { left, right }
             | Self::Minus { left, right }
@@ -1190,22 +1186,34 @@ fn lookup_triple_pattern_variables<'a>(
     pattern: &'a TriplePattern,
     callback: &mut impl FnMut(&'a Variable),
 ) {
-    if let TermPattern::Variable(s) = &pattern.subject {
-        callback(s);
-    }
-    #[cfg(feature = "sparql-12")]
-    if let TermPattern::Triple(s) = &pattern.subject {
-        lookup_triple_pattern_variables(s, callback)
-    }
+    lookup_term_pattern_variables(&pattern.subject, callback);
     if let NamedNodePattern::Variable(p) = &pattern.predicate {
         callback(p);
     }
-    if let TermPattern::Variable(o) = &pattern.object {
-        callback(o);
-    }
-    #[cfg(feature = "sparql-12")]
-    if let TermPattern::Triple(o) = &pattern.object {
-        lookup_triple_pattern_variables(o, callback)
+    lookup_term_pattern_variables(&pattern.object, callback);
+}
+
+/// The variables of a term pattern, those nested in triple terms and (rdf-array) sequences included.
+fn lookup_term_pattern_variables<'a>(
+    pattern: &'a TermPattern,
+    callback: &mut impl FnMut(&'a Variable),
+) {
+    match pattern {
+        TermPattern::Variable(v) => callback(v),
+        #[cfg(feature = "sparql-12")]
+        TermPattern::Triple(t) => lookup_triple_pattern_variables(t, callback),
+        TermPattern::Sequence(elements) => {
+            for element in elements {
+                lookup_term_pattern_variables(element, callback)
+            }
+        }
+        TermPattern::SequencePosition { element, position } => {
+            lookup_term_pattern_variables(element, callback);
+            if let SequencePosition::Variable(v) = position {
+                callback(v);
+            }
+        }
+        TermPattern::NamedNode(_) | TermPattern::BlankNode(_) | TermPattern::Literal(_) => (),
     }
 }
 

@@ -9,7 +9,7 @@ use spargebra::algebra::{
 pub use spargebra::algebra::{Function, PropertyPathExpression};
 use spargebra::term::{BlankNode, TermPattern, TriplePattern};
 pub use spargebra::term::{
-    GroundTerm, GroundTermPattern, Literal, NamedNode, NamedNodePattern, Variable,
+    GroundTerm, GroundTermPattern, Literal, NamedNode, NamedNodePattern, SequencePosition, Variable,
 };
 #[cfg(feature = "sparql-12")]
 use spargebra::term::{GroundTriple, GroundTriplePattern};
@@ -407,6 +407,10 @@ impl From<GroundTerm> for Expression {
             GroundTerm::Literal(value) => value.into(),
             #[cfg(feature = "sparql-12")]
             GroundTerm::Triple(value) => (*value).into(),
+            GroundTerm::Sequence(elements) => Self::FunctionCall(
+                Function::Sequence,
+                elements.into_iter().map(Into::into).collect(),
+            ),
         }
     }
 }
@@ -428,6 +432,17 @@ impl From<GroundTermPattern> for Expression {
             #[cfg(feature = "sparql-12")]
             GroundTermPattern::Triple(value) => (*value).into(),
             GroundTermPattern::Variable(variable) => variable.into(),
+            GroundTermPattern::Sequence(elements) => Self::FunctionCall(
+                Function::Sequence,
+                elements.into_iter().map(Into::into).collect(),
+            ),
+            // rdf-array: a position pattern is no value; this expression always fails
+            GroundTermPattern::SequencePosition { element, .. } => Self::FunctionCall(
+                Function::Custom(NamedNode::new_unchecked(
+                    "https://rdf-array.github.io/rdf-array/vocab#positionPattern",
+                )),
+                vec![(*element).into()],
+            ),
         }
     }
 }
@@ -1338,6 +1353,18 @@ impl GraphPattern {
                 .into()
             }
             TermPattern::Variable(variable) => variable.clone().into(),
+            TermPattern::Sequence(elements) => GroundTermPattern::Sequence(
+                elements
+                    .iter()
+                    .map(|e| Self::term_pattern_from_algebra(e, blank_nodes))
+                    .collect(),
+            ),
+            TermPattern::SequencePosition { element, position } => {
+                GroundTermPattern::SequencePosition {
+                    element: Box::new(Self::term_pattern_from_algebra(element, blank_nodes)),
+                    position: position.clone(),
+                }
+            }
         }
     }
 
@@ -1688,6 +1715,18 @@ fn lookup_term_pattern_variables<'a>(
 ) {
     if let GroundTermPattern::Variable(v) = pattern {
         callback(v);
+    }
+    // rdf-array
+    if let GroundTermPattern::Sequence(elements) = pattern {
+        for element in elements {
+            lookup_term_pattern_variables(element, callback);
+        }
+    }
+    if let GroundTermPattern::SequencePosition { element, position } = pattern {
+        lookup_term_pattern_variables(element, callback);
+        if let SequencePosition::Variable(v) = position {
+            callback(v);
+        }
     }
     #[cfg(feature = "sparql-12")]
     if let GroundTermPattern::Triple(t) = pattern {

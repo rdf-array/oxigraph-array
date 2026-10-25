@@ -12,6 +12,7 @@ pub struct Interner {
     string_for_blank_node_id: HashMap<u128, String>,
     #[cfg(feature = "rdf-12")]
     triples: HashMap<InternedTriple, Triple>,
+    sequences: HashMap<InternedSequence, Sequence>,
 }
 
 impl Interner {
@@ -313,39 +314,48 @@ impl InternedLiteral {
     }
 }
 
-#[derive(Eq, PartialEq, Ord, PartialOrd, Debug, Clone, Copy, Hash)]
-pub enum InternedNamedOrBlankNode {
+/// rdf-array: a subject, an IRI, a blank node or a sequence.
+#[derive(Eq, PartialEq, Ord, PartialOrd, Debug, Clone, Hash)]
+pub enum InternedSubject {
     NamedNode(InternedNamedNode),
     BlankNode(InternedBlankNode),
+    Sequence(InternedSequence),
 }
 
-impl InternedNamedOrBlankNode {
-    pub fn encoded_into(node: NamedOrBlankNodeRef<'_>, interner: &mut Interner) -> Self {
+impl InternedSubject {
+    pub fn encoded_into(node: SubjectRef<'_>, interner: &mut Interner) -> Self {
         match node {
-            NamedOrBlankNodeRef::NamedNode(node) => {
+            SubjectRef::NamedNode(node) => {
                 Self::NamedNode(InternedNamedNode::encoded_into(node, interner))
             }
-            NamedOrBlankNodeRef::BlankNode(node) => {
+            SubjectRef::BlankNode(node) => {
                 Self::BlankNode(InternedBlankNode::encoded_into(node, interner))
+            }
+            SubjectRef::Sequence(sequence) => {
+                Self::Sequence(InternedSequence::encoded_into(sequence, interner))
             }
         }
     }
 
-    pub fn encoded_from(node: NamedOrBlankNodeRef<'_>, interner: &Interner) -> Option<Self> {
+    pub fn encoded_from(node: SubjectRef<'_>, interner: &Interner) -> Option<Self> {
         Some(match node {
-            NamedOrBlankNodeRef::NamedNode(node) => {
+            SubjectRef::NamedNode(node) => {
                 Self::NamedNode(InternedNamedNode::encoded_from(node, interner)?)
             }
-            NamedOrBlankNodeRef::BlankNode(node) => {
+            SubjectRef::BlankNode(node) => {
                 Self::BlankNode(InternedBlankNode::encoded_from(node, interner)?)
+            }
+            SubjectRef::Sequence(sequence) => {
+                Self::Sequence(InternedSequence::encoded_from(sequence, interner)?)
             }
         })
     }
 
-    pub fn decode_from<'a>(&self, interner: &'a Interner) -> NamedOrBlankNodeRef<'a> {
+    pub fn decode_from<'a>(&self, interner: &'a Interner) -> SubjectRef<'a> {
         match self {
-            Self::NamedNode(node) => NamedOrBlankNodeRef::NamedNode(node.decode_from(interner)),
-            Self::BlankNode(node) => NamedOrBlankNodeRef::BlankNode(node.decode_from(interner)),
+            Self::NamedNode(node) => SubjectRef::NamedNode(node.decode_from(interner)),
+            Self::BlankNode(node) => SubjectRef::BlankNode(node.decode_from(interner)),
+            Self::Sequence(sequence) => SubjectRef::Sequence(sequence.decode_from(interner)),
         }
     }
 
@@ -357,11 +367,67 @@ impl InternedNamedOrBlankNode {
         match self {
             Self::NamedNode(node) => Self::NamedNode(node.next()),
             Self::BlankNode(node) => Self::BlankNode(node.next()),
+            Self::Sequence(sequence) => Self::Sequence(sequence.next()),
         }
     }
 
     pub fn impossible() -> Self {
         Self::NamedNode(InternedNamedNode::impossible())
+    }
+}
+
+/// rdf-array: a sequence, as the interned terms of its elements.
+#[derive(Eq, PartialEq, Ord, PartialOrd, Debug, Clone, Hash)]
+pub struct InternedSequence {
+    pub elements: Vec<InternedTerm>,
+}
+
+impl InternedSequence {
+    pub fn encoded_into(sequence: &Sequence, interner: &mut Interner) -> Self {
+        let interned = Self {
+            elements: sequence
+                .iter()
+                .map(|e| InternedTerm::encoded_into(e, interner))
+                .collect(),
+        };
+        interner
+            .sequences
+            .entry(interned.clone())
+            .or_insert_with(|| sequence.clone());
+        interned
+    }
+
+    pub fn encoded_from(sequence: &Sequence, interner: &Interner) -> Option<Self> {
+        let interned = Self {
+            elements: sequence
+                .iter()
+                .map(|e| InternedTerm::encoded_from(e, interner))
+                .collect::<Option<_>>()?,
+        };
+        interner
+            .sequences
+            .contains_key(&interned)
+            .then_some(interned)
+    }
+
+    pub fn decode_from<'a>(&self, interner: &'a Interner) -> &'a Sequence {
+        &interner.sequences[self]
+    }
+
+    /// The blank nodes anywhere inside this sequence, nested sequences and triple terms included.
+    pub fn blank_nodes(&self) -> Vec<InternedBlankNode> {
+        let mut out = Vec::new();
+        for element in &self.elements {
+            element.add_blank_nodes(&mut out);
+        }
+        out
+    }
+
+    /// The least sequence after this one: a sequence is followed by itself extended with the least term.
+    pub fn next(&self) -> Self {
+        let mut elements = self.elements.clone();
+        elements.push(InternedTerm::first());
+        Self { elements }
     }
 }
 
@@ -429,6 +495,7 @@ pub enum InternedTerm {
     Literal(InternedLiteral),
     #[cfg(feature = "rdf-12")]
     Triple(Box<InternedTriple>),
+    Sequence(InternedSequence),
 }
 
 impl InternedTerm {
@@ -446,6 +513,9 @@ impl InternedTerm {
                 triple.as_ref(),
                 interner,
             ))),
+            TermRef::Sequence(sequence) => {
+                Self::Sequence(InternedSequence::encoded_into(sequence, interner))
+            }
         }
     }
 
@@ -463,6 +533,9 @@ impl InternedTerm {
                 triple.as_ref(),
                 interner,
             )?)),
+            TermRef::Sequence(sequence) => {
+                Self::Sequence(InternedSequence::encoded_from(sequence, interner)?)
+            }
         })
     }
 
@@ -473,11 +546,30 @@ impl InternedTerm {
             Self::Literal(term) => TermRef::Literal(term.decode_from(interner)),
             #[cfg(feature = "rdf-12")]
             Self::Triple(triple) => TermRef::Triple(&interner.triples[triple.as_ref()]),
+            Self::Sequence(sequence) => TermRef::Sequence(sequence.decode_from(interner)),
         }
     }
 
     pub fn first() -> Self {
         Self::NamedNode(InternedNamedNode::first())
+    }
+
+    /// rdf-array: adds the blank nodes of this term, those nested in sequences and triple terms included.
+    pub fn add_blank_nodes(&self, out: &mut Vec<InternedBlankNode>) {
+        match self {
+            Self::NamedNode(_) | Self::Literal(_) => (),
+            Self::BlankNode(node) => out.push(*node),
+            #[cfg(feature = "rdf-12")]
+            Self::Triple(triple) => {
+                match &triple.subject {
+                    InternedSubject::BlankNode(node) => out.push(*node),
+                    InternedSubject::Sequence(sequence) => out.extend(sequence.blank_nodes()),
+                    InternedSubject::NamedNode(_) => (),
+                }
+                triple.object.add_blank_nodes(out);
+            }
+            Self::Sequence(sequence) => out.extend(sequence.blank_nodes()),
+        }
     }
 
     pub fn next(&self) -> Self {
@@ -487,6 +579,7 @@ impl InternedTerm {
             Self::Literal(node) => Self::Literal(node.next()),
             #[cfg(feature = "rdf-12")]
             Self::Triple(triple) => Self::Triple(Box::new(triple.next())),
+            Self::Sequence(sequence) => Self::Sequence(sequence.next()),
         }
     }
 
@@ -497,7 +590,7 @@ impl InternedTerm {
 
 #[derive(Eq, PartialEq, Ord, PartialOrd, Debug, Clone, Hash)]
 pub struct InternedTriple {
-    pub subject: InternedNamedOrBlankNode,
+    pub subject: InternedSubject,
     pub predicate: InternedNamedNode,
     pub object: InternedTerm,
 }
@@ -506,7 +599,7 @@ pub struct InternedTriple {
 impl InternedTriple {
     pub fn encoded_into(triple: TripleRef<'_>, interner: &mut Interner) -> Self {
         let interned_triple = Self {
-            subject: InternedNamedOrBlankNode::encoded_into(triple.subject, interner),
+            subject: InternedSubject::encoded_into(triple.subject, interner),
             predicate: InternedNamedNode::encoded_into(triple.predicate, interner),
             object: InternedTerm::encoded_into(triple.object, interner),
         };
@@ -518,7 +611,7 @@ impl InternedTriple {
 
     pub fn encoded_from(triple: TripleRef<'_>, interner: &Interner) -> Option<Self> {
         let interned_triple = Self {
-            subject: InternedNamedOrBlankNode::encoded_from(triple.subject, interner)?,
+            subject: InternedSubject::encoded_from(triple.subject, interner)?,
             predicate: InternedNamedNode::encoded_from(triple.predicate, interner)?,
             object: InternedTerm::encoded_from(triple.object, interner)?,
         };
@@ -530,7 +623,7 @@ impl InternedTriple {
 
     pub fn next(&self) -> Self {
         Self {
-            subject: self.subject,
+            subject: self.subject.clone(),
             predicate: self.predicate,
             object: self.object.next(),
         }

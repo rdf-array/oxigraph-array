@@ -5,7 +5,7 @@ use oxiri::{Iri, IriParseError};
 #[cfg(feature = "rdf-12")]
 use oxrdf::BaseDirection;
 use oxrdf::vocab::rdf;
-use oxrdf::{BlankNode, Literal, NamedNode, NamedOrBlankNode, Term, Triple};
+use oxrdf::{BlankNode, Literal, NamedNode, NamedOrBlankNode, Sequence, Term, Triple};
 use quick_xml::escape::{resolve_xml_entity, unescape_with};
 use quick_xml::events::attributes::Attribute;
 use quick_xml::events::*;
@@ -743,7 +743,6 @@ enum RdfXmlState {
         #[cfg(feature = "rdf-12")]
         base_direction: Option<BaseDirection>,
         subject: NamedOrBlankNode,
-        li_counter: u64,
         #[cfg(feature = "rdf-12")]
         rdf_version: Option<RdfVersion>,
     },
@@ -1262,17 +1261,14 @@ impl<R> InternalRdfXmlParser<R> {
             }
             RdfXmlNextProduction::PropertyElt { subject } => {
                 let iri = if *tag_name == *RDF_LI {
-                    let Some(RdfXmlState::NodeElt { li_counter, .. }) = self.state.last_mut()
-                    else {
+                    // rdf-array: rdf:li stays rdf:li, it is not numbered into rdf:_n
+                    let Some(RdfXmlState::NodeElt { .. }) = self.state.last_mut() else {
                         return Err(RdfXmlSyntaxError::msg(format!(
                             "Invalid property element tag name: {tag_name}"
                         ))
                         .into());
                     };
-                    *li_counter += 1;
-                    NamedNode::new_unchecked(format!(
-                        "http://www.w3.org/1999/02/22-rdf-syntax-ns#_{li_counter}"
-                    ))
+                    NamedNode::new_unchecked(RDF_LI)
                 } else if RESERVED_RDF_ELEMENTS.contains(&&*tag_name)
                     || *tag_name == *RDF_DESCRIPTION
                 {
@@ -1579,7 +1575,6 @@ impl<R> InternalRdfXmlParser<R> {
             #[cfg(feature = "rdf-12")]
             base_direction,
             subject,
-            li_counter: 0,
             #[cfg(feature = "rdf-12")]
             rdf_version,
         })
@@ -1617,7 +1612,6 @@ impl<R> InternalRdfXmlParser<R> {
             #[cfg(feature = "rdf-12")]
             base_direction,
             subject: object.into(),
-            li_counter: 0,
             #[cfg(feature = "rdf-12")]
             rdf_version,
         }
@@ -1688,17 +1682,8 @@ impl<R> InternalRdfXmlParser<R> {
                 objects,
                 ..
             } => {
-                let mut current_node = NamedOrBlankNode::from(rdf::NIL);
-                for object in objects.into_iter().rev() {
-                    let subject = NamedOrBlankNode::from(BlankNode::default());
-                    self.emit_triple(results, Triple::new(subject.clone(), rdf::FIRST, object));
-                    self.emit_triple(
-                        results,
-                        Triple::new(subject.clone(), rdf::REST, current_node),
-                    );
-                    current_node = subject;
-                }
-                let triple = Triple::new(subject, iri, current_node);
+                // rdf-array: a collection is one sequence term
+                let triple = Triple::new(subject, iri, Sequence::new(objects));
                 self.reify_and_annotation(
                     &triple,
                     id_attr,

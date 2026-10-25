@@ -3,7 +3,7 @@ use oxiri::{Iri, IriParseError};
 #[cfg(feature = "rdf-12")]
 use oxrdf::BaseDirection;
 use oxrdf::vocab::{rdf, xsd};
-use oxrdf::{NamedNodeRef, NamedOrBlankNode, NamedOrBlankNodeRef, TermRef, TripleRef};
+use oxrdf::{NamedNodeRef, Subject, SubjectRef, TermRef, TripleRef};
 use quick_xml::Writer;
 use quick_xml::events::{BytesDecl, BytesEnd, BytesStart, BytesText, Event};
 use std::borrow::Cow;
@@ -333,7 +333,7 @@ const RESERVED_SYNTAX_TERMS: [&str; 9] = [
 ];
 
 pub struct InnerRdfXmlWriter {
-    current_subject: Option<NamedOrBlankNode>,
+    current_subject: Option<Subject>,
     current_resource_tag: Option<String>,
     custom_default_prefix: bool,
     prefixes_by_iri: BTreeMap<String, String>,
@@ -351,8 +351,14 @@ impl InnerRdfXmlWriter {
         }
 
         let triple = t.into();
+        if triple.subject.is_sequence() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "rdf-array: RDF/XML cannot write a sequence as a subject",
+            ));
+        }
         // We open a new rdf:Description if useful
-        if self.current_subject.as_ref().map(NamedOrBlankNode::as_ref) != Some(triple.subject) {
+        if self.current_subject.as_ref().map(Subject::as_ref) != Some(triple.subject) {
             if self.current_subject.is_some() {
                 output.push(Event::End(
                     self.current_resource_tag
@@ -381,12 +387,7 @@ impl InnerRdfXmlWriter {
             } else {
                 (BytesStart::new("rdf:Description"), false)
             };
-            description_start.push_attribute(match triple.subject {
-                NamedOrBlankNodeRef::NamedNode(node) => {
-                    ("rdf:about", relative_iri(node.as_str(), &self.base_iri))
-                }
-                NamedOrBlankNodeRef::BlankNode(node) => ("rdf:nodeID", node.as_str().into()),
-            });
+            description_start.push_attribute(self.node_attribute(triple.subject)?);
             output.push(Event::Start(description_start));
             if with_type_tag {
                 return Ok(()); // No need for a value
@@ -459,12 +460,7 @@ impl InnerRdfXmlWriter {
                 property_open.push_attribute(("rdf:parseType", "Triple"));
                 output.push(Event::Start(property_open));
                 let mut subject_start = BytesStart::new("rdf:Description");
-                subject_start.push_attribute(match triple.subject.as_ref() {
-                    NamedOrBlankNodeRef::NamedNode(node) => {
-                        ("rdf:about", relative_iri(node.as_str(), &self.base_iri))
-                    }
-                    NamedOrBlankNodeRef::BlankNode(node) => ("rdf:nodeID", node.as_str().into()),
-                });
+                subject_start.push_attribute(self.node_attribute(triple.subject.as_ref())?);
                 output.push(Event::Start(subject_start));
                 self.write_predicate_object(
                     triple.predicate.as_ref(),
@@ -474,8 +470,44 @@ impl InnerRdfXmlWriter {
                 output.push(Event::End(BytesEnd::new("rdf:Description")));
                 output.push(Event::End(BytesEnd::new(prop_qname)));
             }
+            // rdf-array: a sequence of IRIs and blank nodes is written as rdf:parseType="Collection"
+            TermRef::Sequence(sequence) => {
+                let mut nodes = Vec::with_capacity(sequence.len());
+                for element in sequence.iter() {
+                    let subject = match element {
+                        TermRef::NamedNode(node) => SubjectRef::NamedNode(node),
+                        TermRef::BlankNode(node) => SubjectRef::BlankNode(node),
+                        _ => {
+                            return Err(io::Error::new(
+                                io::ErrorKind::InvalidInput,
+                                "rdf-array: RDF/XML can only write a sequence of IRIs and blank nodes",
+                            ));
+                        }
+                    };
+                    let mut node_start = BytesStart::new("rdf:Description");
+                    node_start.push_attribute(self.node_attribute(subject)?);
+                    nodes.push(Event::Empty(node_start));
+                }
+                property_open.push_attribute(("rdf:parseType", "Collection"));
+                output.push(Event::Start(property_open));
+                output.extend(nodes);
+                output.push(Event::End(BytesEnd::new(prop_qname)));
+            }
         }
         Ok(())
+    }
+
+    fn node_attribute<'a>(&self, node: SubjectRef<'a>) -> io::Result<(&'static str, Cow<'a, str>)> {
+        match node {
+            SubjectRef::NamedNode(node) => {
+                Ok(("rdf:about", relative_iri(node.as_str(), &self.base_iri)))
+            }
+            SubjectRef::BlankNode(node) => Ok(("rdf:nodeID", node.as_str().into())),
+            SubjectRef::Sequence(_) => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "rdf-array: RDF/XML cannot write a sequence as a node",
+            )),
+        }
     }
 
     fn write_start(&self, output: &mut Vec<Event<'_>>) {

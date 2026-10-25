@@ -1,11 +1,11 @@
 #[cfg(feature = "sparql-12")]
 use oxrdf::BaseDirection;
-use oxrdf::{
-    BlankNode, Dataset, GraphNameRef, Literal, NamedNode, NamedOrBlankNodeRef, QuadRef, Term,
-    TermRef,
-};
 #[cfg(feature = "sparql-12")]
-use oxrdf::{NamedOrBlankNode, Triple};
+use oxrdf::Triple;
+use oxrdf::{
+    BlankNode, Dataset, GraphNameRef, Literal, NamedNode, QuadRef, Sequence, Subject, SubjectRef,
+    Term, TermRef,
+};
 use oxsdatatypes::{Boolean, DateTime, Decimal, Double, Float, Integer};
 #[cfg(feature = "sep-0002")]
 use oxsdatatypes::{Date, DayTimeDuration, Duration, Time, YearMonthDuration};
@@ -148,6 +148,7 @@ impl<'a> QueryableDataset<'a> for &'a Dataset {
                     }
                     #[cfg(feature = "sparql-12")]
                     TermRef::Triple(_) => return Box::new(empty()),
+                    TermRef::Sequence(_) => return Box::new(empty()),
                 }
             } else {
                 GraphNameRef::DefaultGraph
@@ -156,14 +157,8 @@ impl<'a> QueryableDataset<'a> for &'a Dataset {
             None
         };
         if let Some(subject) = subject {
-            let subject = match subject.into() {
-                TermRef::NamedNode(s) => NamedOrBlankNodeRef::from(s),
-                TermRef::BlankNode(s) => s.into(),
-                TermRef::Literal(_) => {
-                    return Box::new(empty());
-                }
-                #[cfg(feature = "sparql-12")]
-                TermRef::Triple(_) => return Box::new(empty()),
+            let Ok(subject) = SubjectRef::try_from(TermRef::from(subject)) else {
+                return Box::new(empty());
             };
             let predicate = predicate.cloned();
             let object = object.cloned();
@@ -289,6 +284,8 @@ pub enum ExpressionTerm {
     },
     #[cfg(feature = "sparql-12")]
     Triple(Box<ExpressionTriple>),
+    /// rdf-array: a sequence of terms
+    Sequence(Vec<ExpressionTerm>),
 }
 
 impl PartialEq for ExpressionTerm {
@@ -360,6 +357,7 @@ impl PartialEq for ExpressionTerm {
                 ) => lv == rv && ld == rd,
                 #[cfg(feature = "sparql-12")]
                 (Self::Triple(l), Self::Triple(r)) => l == r,
+                (Self::Sequence(l), Self::Sequence(r)) => l == r,
                 (_, _) => unreachable!(),
             }
     }
@@ -411,6 +409,7 @@ impl Hash for ExpressionTerm {
             ExpressionTerm::OtherTypedLiteral { value, datatype } => (value, datatype).hash(state),
             #[cfg(feature = "sparql-12")]
             ExpressionTerm::Triple(v) => v.hash(state),
+            ExpressionTerm::Sequence(v) => v.hash(state),
         }
     }
 }
@@ -457,6 +456,7 @@ impl From<Term> for ExpressionTerm {
             }
             #[cfg(feature = "sparql-12")]
             Term::Triple(t) => Self::Triple(Box::new((*t).into())),
+            Term::Sequence(t) => Self::Sequence(t.into_iter().map(Into::into).collect()),
         }
     }
 }
@@ -511,6 +511,7 @@ impl From<ExpressionTerm> for Term {
             }
             #[cfg(feature = "sparql-12")]
             ExpressionTerm::Triple(t) => Triple::from(*t).into(),
+            ExpressionTerm::Sequence(t) => Sequence::new(t.into_iter().map(Self::from)).into(),
         }
     }
 }
@@ -617,7 +618,7 @@ fn parse_typed_literal(value: &str, datatype: &str) -> Option<ExpressionTerm> {
 #[cfg(feature = "sparql-12")]
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct ExpressionTriple {
-    pub subject: NamedOrBlankNode,
+    pub subject: Subject,
     pub predicate: NamedNode,
     pub object: ExpressionTerm,
 }
@@ -661,19 +662,14 @@ impl ExpressionTriple {
         predicate: ExpressionTerm,
         object: ExpressionTerm,
     ) -> Option<Self> {
-        if !matches!(
-            subject,
-            ExpressionTerm::NamedNode(_) | ExpressionTerm::BlankNode(_) | ExpressionTerm::Triple(_)
-        ) {
-            return None;
-        }
         if !matches!(predicate, ExpressionTerm::NamedNode(_)) {
             return None;
         }
         Some(Self {
             subject: match subject {
-                ExpressionTerm::NamedNode(s) => NamedOrBlankNode::NamedNode(s),
-                ExpressionTerm::BlankNode(s) => NamedOrBlankNode::BlankNode(s),
+                ExpressionTerm::NamedNode(s) => Subject::NamedNode(s),
+                ExpressionTerm::BlankNode(s) => Subject::BlankNode(s),
+                ExpressionTerm::Sequence(_) => Subject::try_from(Term::from(subject)).ok()?,
                 _ => return None,
             },
             predicate: if let ExpressionTerm::NamedNode(p) = predicate {
@@ -686,14 +682,10 @@ impl ExpressionTriple {
     }
 }
 
-#[cfg(feature = "sparql-12")]
-impl From<NamedOrBlankNode> for ExpressionTerm {
+impl From<Subject> for ExpressionTerm {
     #[inline]
-    fn from(subject: NamedOrBlankNode) -> Self {
-        match subject {
-            NamedOrBlankNode::NamedNode(s) => Self::NamedNode(s),
-            NamedOrBlankNode::BlankNode(s) => Self::BlankNode(s),
-        }
+    fn from(subject: Subject) -> Self {
+        Term::from(subject).into()
     }
 }
 

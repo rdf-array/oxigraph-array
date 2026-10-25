@@ -13,7 +13,8 @@ use oxiri::{Iri, IriParseError};
 use oxrdf::Triple;
 use oxrdf::vocab::{rdf, xsd};
 use oxrdf::{
-    BlankNode, GraphName, Literal, NamedNode, NamedNodeRef, NamedOrBlankNode, Quad, Term, Variable,
+    BlankNode, GraphName, Literal, NamedNode, NamedNodeRef, NamedOrBlankNode, Quad, Subject, Term,
+    Variable,
 };
 use std::collections::HashMap;
 use std::collections::hash_map::Iter;
@@ -31,6 +32,8 @@ pub enum N3Term {
     #[cfg(feature = "rdf-12")]
     Triple(Box<Triple>),
     Variable(Variable),
+    /// rdf-array: a collection `( … )` is one sequence term, whose elements may be variables.
+    Sequence(Vec<N3Term>),
 }
 
 impl fmt::Display for N3Term {
@@ -43,6 +46,16 @@ impl fmt::Display for N3Term {
             #[cfg(feature = "rdf-12")]
             Self::Triple(term) => term.fmt(f),
             Self::Variable(term) => term.fmt(f),
+            Self::Sequence(elements) => {
+                f.write_str("(")?;
+                for (i, element) in elements.iter().enumerate() {
+                    if i > 0 {
+                        f.write_str(" ")?;
+                    }
+                    element.fmt(f)?;
+                }
+                f.write_str(")")
+            }
         }
     }
 }
@@ -110,7 +123,17 @@ impl From<Term> for N3Term {
             Term::Literal(node) => node.into(),
             #[cfg(feature = "rdf-12")]
             Term::Triple(triple) => Self::Triple(triple),
+            Term::Sequence(sequence) => {
+                Self::Sequence(sequence.into_iter().map(Into::into).collect())
+            }
         }
+    }
+}
+
+impl From<Subject> for N3Term {
+    #[inline]
+    fn from(node: Subject) -> Self {
+        Term::from(node).into()
     }
 }
 
@@ -862,6 +885,8 @@ struct N3Recognizer {
     terms: Vec<N3Term>,
     predicates: Vec<Predicate>,
     contexts: Vec<BlankNode>,
+    /// rdf-array: where each collection being read starts in `terms`
+    collection_starts: Vec<usize>,
 }
 
 struct N3RecognizerContext {
@@ -877,6 +902,7 @@ impl RuleRecognizer for N3Recognizer {
     fn error_recovery_state(mut self) -> Self {
         self.stack.clear();
         self.terms.clear();
+        self.collection_starts.clear();
         self.predicates.clear();
         self.contexts.clear();
         self
@@ -1222,39 +1248,22 @@ impl RuleRecognizer for N3Recognizer {
                         self.error(errors, "The '[ id' construction should be followed by an IRI")
                     }
                 },
+                // rdf-array: a collection is one sequence term
                 N3State::CollectionBeginning => if let N3Token::Punctuation(")") = token {
-                    self.terms.push(rdf::NIL.into());
+                    self.terms.push(N3Term::Sequence(Vec::new()));
                     return self;
                 } else {
-                    let root = BlankNode::default();
-                    self.terms.push(root.clone().into());
-                    self.terms.push(root.into());
+                    self.collection_starts.push(self.terms.len());
                     self.stack.push(N3State::CollectionPossibleEnd);
                     self.stack.push(N3State::Path);
                 },
                 N3State::CollectionPossibleEnd => {
-                    let value = self.terms.pop().unwrap();
-                    let old = self.terms.pop().unwrap();
-                    results.push(self.quad(
-                        old.clone(),
-                        rdf::FIRST,
-                        value,
-                    ));
                     if let N3Token::Punctuation(")") = token {
-                        results.push(self.quad(
-                            old,
-                            rdf::REST,
-                            rdf::NIL,
-                        ));
+                        let start = self.collection_starts.pop().unwrap();
+                        let elements = self.terms.split_off(start);
+                        self.terms.push(N3Term::Sequence(elements));
                         return self;
                     }
-                    let new = BlankNode::default();
-                    results.push(self.quad(
-                        old,
-                        rdf::REST,
-                        new.clone(),
-                    ));
-                    self.terms.push(new.into());
                     self.stack.push(N3State::CollectionPossibleEnd);
                     self.stack.push(N3State::Path);
                 }
@@ -1405,6 +1414,7 @@ impl N3Recognizer {
                 terms: Vec::new(),
                 predicates: Vec::new(),
                 contexts: Vec::new(),
+                collection_starts: Vec::new(),
             },
             N3RecognizerContext {
                 lexer_options: N3LexerOptions { base_iri },

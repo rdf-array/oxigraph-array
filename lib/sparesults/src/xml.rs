@@ -234,6 +234,14 @@ fn write_xml_term<'a>(output: &mut Vec<Event<'a>>, term: TermRef<'a>) {
             output.push(Event::End(BytesEnd::new("object")));
             output.push(Event::End(BytesEnd::new("triple")));
         }
+        // rdf-array: <seq> with one child element per element
+        TermRef::Sequence(sequence) => {
+            output.push(Event::Start(BytesStart::new("seq")));
+            for element in sequence.iter() {
+                write_xml_term(output, element);
+            }
+            output.push(Event::End(BytesEnd::new("seq")));
+        }
     }
 }
 
@@ -547,6 +555,7 @@ impl XmlInnerQueryResultsParser {
                                 direction:None,
                                 datatype: None,
                                 subject_stack: Vec::new(),
+                                sequence_stack: Vec::new(),
                                 predicate_stack: Vec::new(),
                                 object_stack: Vec::new(),
                             },
@@ -610,6 +619,7 @@ enum State {
     Subject,
     Predicate,
     Object,
+    Sequence,
 }
 
 struct XmlInnerSolutionsParser {
@@ -626,6 +636,8 @@ struct XmlInnerSolutionsParser {
     subject_stack: Vec<Term>,
     predicate_stack: Vec<Term>,
     object_stack: Vec<Term>,
+    /// rdf-array: the elements of the <seq> elements being read, innermost last
+    sequence_stack: Vec<Vec<Term>>,
 }
 
 impl XmlInnerSolutionsParser {
@@ -674,7 +686,18 @@ impl XmlInnerSolutionsParser {
                         .into())
                     }
                 }
-                State::Binding | State::Subject | State::Predicate | State::Object => {
+                State::Binding
+                | State::Subject
+                | State::Predicate
+                | State::Object
+                | State::Sequence => {
+                    if let (Some(State::Sequence), Some(element)) =
+                        (self.state_stack.last(), self.term.take())
+                    {
+                        if let Some(elements) = self.sequence_stack.last_mut() {
+                            elements.push(element);
+                        }
+                    }
                     if self.term.is_some() {
                         return Err(QueryResultsSyntaxError::msg(
                             "There is already a value for the current binding",
@@ -716,9 +739,13 @@ impl XmlInnerSolutionsParser {
                     } else if event.local_name().as_ref() == b"triple" {
                         self.state_stack.push(State::Triple);
                         Ok(None)
+                    } else if event.local_name().as_ref() == b"seq" {
+                        self.state_stack.push(State::Sequence);
+                        self.sequence_stack.push(Vec::new());
+                        Ok(None)
                     } else {
                         Err(QueryResultsSyntaxError::msg(format!(
-                            "Expecting <uri>, <bnode> or <literal> found <{}>",
+                            "Expecting <uri>, <bnode>, <literal>, <triple> or <seq> found <{}>",
                             self.decoder.decode(event.name().as_ref())?
                         ))
                         .into())
@@ -844,6 +871,14 @@ impl XmlInnerSolutionsParser {
                     }
                     Ok(None)
                 }
+                State::Sequence => {
+                    let mut elements = self.sequence_stack.pop().unwrap_or_default();
+                    if let Some(element) = self.term.take() {
+                        elements.push(element);
+                    }
+                    self.term = Some(Sequence::from(elements).into());
+                    Ok(None)
+                }
                 State::BNode => {
                     if self.term.is_none() {
                         // We default to a random bnode
@@ -877,8 +912,9 @@ impl XmlInnerSolutionsParser {
                         self.term = Some(
                             Triple::new(
                                 match subject {
-                                    Term::NamedNode(subject) => NamedOrBlankNode::from(subject),
-                                    Term::BlankNode(subject) => NamedOrBlankNode::from(subject),
+                                    Term::NamedNode(subject) => Subject::from(subject),
+                                    Term::BlankNode(subject) => Subject::from(subject),
+                                    Term::Sequence(subject) => Subject::from(subject),
                                     Term::Triple(_) => {
                                         return Err(QueryResultsSyntaxError::msg(
                                             "The <subject> value cannot be a <triple>",

@@ -14,15 +14,15 @@ use crate::{
 use json_event_parser::{JsonEvent, WriterJsonSerializer};
 use oxiri::Iri;
 #[cfg(feature = "sparql-12")]
-use oxrdf::{BaseDirection, NamedOrBlankNode};
-use oxrdf::{BlankNode, GraphName, Literal, NamedNode, Term, Triple, Variable};
+use oxrdf::BaseDirection;
+use oxrdf::{BlankNode, GraphName, Literal, NamedNode, Sequence, Term, Triple, Variable};
 use oxsdatatypes::{DateTime, DayTimeDuration, Decimal, Double, Float, Integer};
 use rustc_hash::{FxBuildHasher, FxHashMap, FxHashSet, FxHasher};
 use spargebra::algebra::{AggregateFunction, PropertyPathExpression};
 #[cfg(feature = "sparql-12")]
 use spargebra::term::GroundTriple;
 use spargebra::term::{
-    GroundTerm, GroundTermPattern, NamedNodePattern, TermPattern, TriplePattern,
+    GroundTerm, GroundTermPattern, NamedNodePattern, SequencePosition, TermPattern, TriplePattern,
 };
 use sparopt::algebra::{
     AggregateExpression, Expression, GraphPattern, JoinAlgorithm, LeftJoinAlgorithm,
@@ -675,6 +675,9 @@ impl<'a, D: QueryableDataset<'a>> SimpleEvaluator<'a, D> {
                                         }
                                         #[cfg(feature = "sparql-12")]
                                         GroundTerm::Triple(triple) => self.encode_triple(triple),
+                                        GroundTerm::Sequence(_) => {
+                                            self.encode_term(Term::from(term.clone()))
+                                        }
                                     }?,
                                 );
                             }
@@ -727,7 +730,6 @@ impl<'a, D: QueryableDataset<'a>> SimpleEvaluator<'a, D> {
                 Rc::new(move |from| {
                     let input_subject = match subject_selector.get_pattern_value(
                         &from,
-                        #[cfg(feature = "sparql-12")]
                         &dataset,
                     ) {
                         Ok(value) => value,
@@ -735,7 +737,6 @@ impl<'a, D: QueryableDataset<'a>> SimpleEvaluator<'a, D> {
                     };
                     let input_predicate = match predicate_selector.get_pattern_value(
                         &from,
-                        #[cfg(feature = "sparql-12")]
                         &dataset,
                     ) {
                         Ok(value) => value,
@@ -743,7 +744,6 @@ impl<'a, D: QueryableDataset<'a>> SimpleEvaluator<'a, D> {
                     };
                     let input_object = match object_selector.get_pattern_value(
                         &from,
-                        #[cfg(feature = "sparql-12")]
                         &dataset,
                     ) {
                         Ok(value) => value,
@@ -752,7 +752,6 @@ impl<'a, D: QueryableDataset<'a>> SimpleEvaluator<'a, D> {
                     let input_graph_name = if let Some(graph_name_selector) = &graph_name_selector {
                         match graph_name_selector.get_pattern_value(
                             &from,
-                            #[cfg(feature = "sparql-12")]
                             &dataset,
                         ) {
                             Ok(value) => value,
@@ -772,8 +771,47 @@ impl<'a, D: QueryableDataset<'a>> SimpleEvaluator<'a, D> {
                     let predicate_selector = predicate_selector.clone();
                     let object_selector = object_selector.clone();
                     let graph_name_selector = graph_name_selector.clone();
-                    #[cfg(feature = "sparql-12")]
                     let dataset = dataset.clone();
+                    // rdf-array: a position pattern with a variable or `*` position matches a quad once per position
+                    if subject_selector.is_multi() || object_selector.is_multi() {
+                        return Box::new(iter.flat_map(move |quad| {
+                            let quad = match quad {
+                                Ok(quad) => quad,
+                                Err(e) => return vec![Err(e)],
+                            };
+                            let mut tuples = vec![from.clone()];
+                            let mut parts = vec![
+                                (&subject_selector, quad.subject),
+                                (&predicate_selector, quad.predicate),
+                                (&object_selector, quad.object),
+                            ];
+                            if let Some(graph_name_selector) = &graph_name_selector {
+                                let Some(quad_graph_name) = quad.graph_name else {
+                                    return vec![Err(QueryEvaluationError::UnexpectedDefaultGraph)];
+                                };
+                                parts.push((graph_name_selector, quad_graph_name));
+                            }
+                            for (selector, value) in parts {
+                                let mut next = Vec::new();
+                                for tuple in tuples {
+                                    match put_pattern_values::<D>(
+                                        selector,
+                                        value.clone(),
+                                        tuple,
+                                        &dataset,
+                                    ) {
+                                        Ok(t) => next.extend(t),
+                                        Err(e) => return vec![Err(e)],
+                                    }
+                                }
+                                tuples = next;
+                                if tuples.is_empty() {
+                                    break;
+                                }
+                            }
+                            tuples.into_iter().map(Ok).collect()
+                        }));
+                    }
                     Box::new(
                         iter.map(move |quad| {
                             let quad = quad?;
@@ -782,7 +820,6 @@ impl<'a, D: QueryableDataset<'a>> SimpleEvaluator<'a, D> {
                                 &subject_selector,
                                 quad.subject,
                                 &mut new_tuple,
-                                #[cfg(feature = "sparql-12")]
                                 &dataset,
                             )? {
                                 return Ok(None);
@@ -791,7 +828,6 @@ impl<'a, D: QueryableDataset<'a>> SimpleEvaluator<'a, D> {
                                 &predicate_selector,
                                 quad.predicate,
                                 &mut new_tuple,
-                                #[cfg(feature = "sparql-12")]
                                 &dataset,
                             )? {
                                 return Ok(None);
@@ -800,7 +836,6 @@ impl<'a, D: QueryableDataset<'a>> SimpleEvaluator<'a, D> {
                                 &object_selector,
                                 quad.object,
                                 &mut new_tuple,
-                                #[cfg(feature = "sparql-12")]
                                 &dataset,
                             )? {
                                 return Ok(None);
@@ -813,7 +848,6 @@ impl<'a, D: QueryableDataset<'a>> SimpleEvaluator<'a, D> {
                                     graph_name_selector,
                                     quad_graph_name,
                                     &mut new_tuple,
-                                    #[cfg(feature = "sparql-12")]
                                     &dataset,
                                 )? {
                                     return Ok(None);
@@ -855,7 +889,6 @@ impl<'a, D: QueryableDataset<'a>> SimpleEvaluator<'a, D> {
                 Rc::new(move |from| {
                     let input_subject = match subject_selector.get_pattern_value(
                         &from,
-                        #[cfg(feature = "sparql-12")]
                         &dataset,
                     ) {
                         Ok(value) => value,
@@ -866,7 +899,6 @@ impl<'a, D: QueryableDataset<'a>> SimpleEvaluator<'a, D> {
                     };
                     let input_object = match object_selector.get_pattern_value(
                         &from,
-                        #[cfg(feature = "sparql-12")]
                         &dataset,
                     ) {
                         Ok(value) => value,
@@ -875,7 +907,6 @@ impl<'a, D: QueryableDataset<'a>> SimpleEvaluator<'a, D> {
                     let input_graph_name = if let Some(graph_name_selector) = &graph_name_selector {
                         match graph_name_selector.get_pattern_value(
                             &from,
-                            #[cfg(feature = "sparql-12")]
                             &dataset,
                         ) {
                             Ok(value) => value,
@@ -900,7 +931,6 @@ impl<'a, D: QueryableDataset<'a>> SimpleEvaluator<'a, D> {
                         }
                         (Some(input_subject), None, Some(input_graph_name)) => {
                             let object_selector = object_selector.clone();
-                            #[cfg(feature = "sparql-12")]
                             let dataset = dataset.clone();
                             Box::new(
                                 path_eval
@@ -916,7 +946,6 @@ impl<'a, D: QueryableDataset<'a>> SimpleEvaluator<'a, D> {
                                             &object_selector,
                                             o,
                                             &mut new_tuple,
-                                            #[cfg(feature = "sparql-12")]
                                             &dataset,
                                         )? {
                                             return Ok(None);
@@ -928,7 +957,6 @@ impl<'a, D: QueryableDataset<'a>> SimpleEvaluator<'a, D> {
                         }
                         (None, Some(input_object), Some(input_graph_name)) => {
                             let subject_selector = subject_selector.clone();
-                            #[cfg(feature = "sparql-12")]
                             let dataset = dataset.clone();
                             Box::new(
                                 path_eval
@@ -944,7 +972,6 @@ impl<'a, D: QueryableDataset<'a>> SimpleEvaluator<'a, D> {
                                             &subject_selector,
                                             s,
                                             &mut new_tuple,
-                                            #[cfg(feature = "sparql-12")]
                                             &dataset,
                                         )? {
                                             return Ok(None);
@@ -957,7 +984,6 @@ impl<'a, D: QueryableDataset<'a>> SimpleEvaluator<'a, D> {
                         (None, None, Some(input_graph_name)) => {
                             let subject_selector = subject_selector.clone();
                             let object_selector = object_selector.clone();
-                            #[cfg(feature = "sparql-12")]
                             let dataset = dataset.clone();
                             Box::new(
                                 path_eval
@@ -969,7 +995,6 @@ impl<'a, D: QueryableDataset<'a>> SimpleEvaluator<'a, D> {
                                             &subject_selector,
                                             s,
                                             &mut new_tuple,
-                                            #[cfg(feature = "sparql-12")]
                                             &dataset,
                                         )? {
                                             return Ok(None);
@@ -978,7 +1003,6 @@ impl<'a, D: QueryableDataset<'a>> SimpleEvaluator<'a, D> {
                                             &object_selector,
                                             o,
                                             &mut new_tuple,
-                                            #[cfg(feature = "sparql-12")]
                                             &dataset,
                                         )? {
                                             return Ok(None);
@@ -990,7 +1014,6 @@ impl<'a, D: QueryableDataset<'a>> SimpleEvaluator<'a, D> {
                         }
                         (Some(input_subject), Some(input_object), None) => {
                             let graph_name_selector = graph_name_selector.clone();
-                            #[cfg(feature = "sparql-12")]
                             let dataset = dataset.clone();
                             Box::new(
                                 path_eval
@@ -1012,7 +1035,6 @@ impl<'a, D: QueryableDataset<'a>> SimpleEvaluator<'a, D> {
                                                 graph_name_selector,
                                                 g,
                                                 &mut new_tuple,
-                                                #[cfg(feature = "sparql-12")]
                                                 &dataset,
                                             )? {
                                                 return Ok(None);
@@ -1026,7 +1048,6 @@ impl<'a, D: QueryableDataset<'a>> SimpleEvaluator<'a, D> {
                         (Some(input_subject), None, None) => {
                             let object_selector = object_selector.clone();
                             let graph_name_selector = graph_name_selector.clone();
-                            #[cfg(feature = "sparql-12")]
                             let dataset = dataset.clone();
                             Box::new(
                                 path_eval
@@ -1038,7 +1059,6 @@ impl<'a, D: QueryableDataset<'a>> SimpleEvaluator<'a, D> {
                                             &object_selector,
                                             o,
                                             &mut new_tuple,
-                                            #[cfg(feature = "sparql-12")]
                                             &dataset,
                                         )? {
                                             return Ok(None);
@@ -1053,7 +1073,6 @@ impl<'a, D: QueryableDataset<'a>> SimpleEvaluator<'a, D> {
                                                 graph_name_selector,
                                                 g,
                                                 &mut new_tuple,
-                                                #[cfg(feature = "sparql-12")]
                                                 &dataset,
                                             )? {
                                                 return Ok(None);
@@ -1067,7 +1086,6 @@ impl<'a, D: QueryableDataset<'a>> SimpleEvaluator<'a, D> {
                         (None, Some(input_object), None) => {
                             let subject_selector = subject_selector.clone();
                             let graph_name_selector = graph_name_selector.clone();
-                            #[cfg(feature = "sparql-12")]
                             let dataset = dataset.clone();
                             Box::new(
                                 path_eval
@@ -1079,7 +1097,6 @@ impl<'a, D: QueryableDataset<'a>> SimpleEvaluator<'a, D> {
                                             &subject_selector,
                                             s,
                                             &mut new_tuple,
-                                            #[cfg(feature = "sparql-12")]
                                             &dataset,
                                         )? {
                                             return Ok(None);
@@ -1094,7 +1111,6 @@ impl<'a, D: QueryableDataset<'a>> SimpleEvaluator<'a, D> {
                                                 graph_name_selector,
                                                 g,
                                                 &mut new_tuple,
-                                                #[cfg(feature = "sparql-12")]
                                                 &dataset,
                                             )? {
                                                 return Ok(None);
@@ -1109,7 +1125,6 @@ impl<'a, D: QueryableDataset<'a>> SimpleEvaluator<'a, D> {
                             let subject_selector = subject_selector.clone();
                             let object_selector = object_selector.clone();
                             let graph_name_selector = graph_name_selector.clone();
-                            #[cfg(feature = "sparql-12")]
                             let dataset = dataset.clone();
                             Box::new(
                                 path_eval
@@ -1121,7 +1136,6 @@ impl<'a, D: QueryableDataset<'a>> SimpleEvaluator<'a, D> {
                                             &subject_selector,
                                             s,
                                             &mut new_tuple,
-                                            #[cfg(feature = "sparql-12")]
                                             &dataset,
                                         )? {
                                             return Ok(None);
@@ -1130,7 +1144,6 @@ impl<'a, D: QueryableDataset<'a>> SimpleEvaluator<'a, D> {
                                             &object_selector,
                                             o,
                                             &mut new_tuple,
-                                            #[cfg(feature = "sparql-12")]
                                             &dataset,
                                         )? {
                                             return Ok(None);
@@ -1145,7 +1158,6 @@ impl<'a, D: QueryableDataset<'a>> SimpleEvaluator<'a, D> {
                                                 graph_name_selector,
                                                 g,
                                                 &mut new_tuple,
-                                                #[cfg(feature = "sparql-12")]
                                                 &dataset,
                                             )? {
                                                 return Ok(None);
@@ -1169,7 +1181,6 @@ impl<'a, D: QueryableDataset<'a>> SimpleEvaluator<'a, D> {
                 Rc::new(move |from| {
                     let input_graph_name = match graph_name_selector.get_pattern_value(
                         &from,
-                        #[cfg(feature = "sparql-12")]
                         &dataset,
                     ) {
                         Ok(value) => value,
@@ -1183,7 +1194,6 @@ impl<'a, D: QueryableDataset<'a>> SimpleEvaluator<'a, D> {
                         }
                     } else {
                         let graph_name_selector = graph_name_selector.clone();
-                        #[cfg(feature = "sparql-12")]
                         let dataset = dataset.clone();
                         Box::new(
                             dataset
@@ -1195,7 +1205,6 @@ impl<'a, D: QueryableDataset<'a>> SimpleEvaluator<'a, D> {
                                         &graph_name_selector,
                                         graph_name,
                                         &mut new_tuple,
-                                        #[cfg(feature = "sparql-12")]
                                         &dataset,
                                     )? {
                                         return Ok(None);
@@ -1803,7 +1812,6 @@ impl<'a, D: QueryableDataset<'a>> SimpleEvaluator<'a, D> {
         let service_name = service_name
             .get_pattern_value(
                 from,
-                #[cfg(feature = "sparql-12")]
                 &self.dataset,
             )?
             .ok_or(QueryEvaluationError::UnboundService)?;
@@ -2706,15 +2714,30 @@ fn cmp_terms(a: Option<&ExpressionTerm>, b: Option<&ExpressionTerm>) -> Ordering
                     ExpressionTerm::NamedNode(b) => a.as_str().cmp(b.as_str()),
                     _ => Ordering::Less,
                 },
+                // rdf-array: sequences come last, compared element-wise, a prefix first
+                ExpressionTerm::Sequence(a) => match b {
+                    ExpressionTerm::Sequence(b) => {
+                        for (a, b) in a.iter().zip(b) {
+                            match cmp_terms(Some(a), Some(b)) {
+                                Ordering::Equal => (),
+                                o => return o,
+                            }
+                        }
+                        a.len().cmp(&b.len())
+                    }
+                    _ => Ordering::Greater,
+                },
                 #[cfg(feature = "sparql-12")]
                 ExpressionTerm::Triple(a) => match b {
                     ExpressionTerm::Triple(b) => cmp_triples(a, b),
+                    ExpressionTerm::Sequence(_) => Ordering::Less,
                     _ => Ordering::Greater,
                 },
                 _ => match b {
                     ExpressionTerm::NamedNode(_) | ExpressionTerm::BlankNode(_) => {
                         Ordering::Greater
                     }
+                    ExpressionTerm::Sequence(_) => Ordering::Less,
                     #[cfg(feature = "sparql-12")]
                     ExpressionTerm::Triple(_) => Ordering::Less,
                     _ => {
@@ -2743,16 +2766,10 @@ fn cmp_terms(a: Option<&ExpressionTerm>, b: Option<&ExpressionTerm>) -> Ordering
 
 #[cfg(feature = "sparql-12")]
 fn cmp_triples(a: &ExpressionTriple, b: &ExpressionTriple) -> Ordering {
-    match match &a.subject {
-        NamedOrBlankNode::BlankNode(a) => match &b.subject {
-            NamedOrBlankNode::BlankNode(b) => a.as_str().cmp(b.as_str()),
-            NamedOrBlankNode::NamedNode(_) => Ordering::Less,
-        },
-        NamedOrBlankNode::NamedNode(a) => match &b.subject {
-            NamedOrBlankNode::BlankNode(_) => Ordering::Greater,
-            NamedOrBlankNode::NamedNode(b) => a.as_str().cmp(b.as_str()),
-        },
-    } {
+    match cmp_terms(
+        Some(&a.subject.clone().into()),
+        Some(&b.subject.clone().into()),
+    ) {
         Ordering::Equal => match a.predicate.as_str().cmp(b.predicate.as_str()) {
             Ordering::Equal => cmp_terms(Some(&a.object), Some(&b.object)),
             o => o,
@@ -2766,9 +2783,28 @@ enum TupleSelector<T> {
     Variable(usize),
     #[cfg(feature = "sparql-12")]
     TriplePattern(Rc<TripleTupleSelector<T>>),
+    /// rdf-array: a sequence pattern with variables
+    Sequence(Rc<Vec<TupleSelector<T>>>),
+    /// rdf-array: a position pattern `((element))[position]`
+    SequencePosition(Rc<SequencePositionSelector<T>>),
 }
 
-impl<T> TupleSelector<T> {
+/// rdf-array: `((element))[position]`
+struct SequencePositionSelector<T> {
+    element: TupleSelector<T>,
+    position: PositionSelector,
+}
+
+#[derive(Clone, Copy)]
+enum PositionSelector {
+    /// A zero-based position.
+    Index(usize),
+    /// The variable bound to the 1-based position.
+    Variable(usize),
+    Any,
+}
+
+impl<T: Clone> TupleSelector<T> {
     fn from_ground_term_pattern<'a>(
         term_pattern: &GroundTermPattern,
         variables: &mut Vec<Variable>,
@@ -2815,7 +2851,51 @@ impl<T> TupleSelector<T> {
                     }
                 }
             }
+            GroundTermPattern::Sequence(elements) => {
+                let selectors = elements
+                    .iter()
+                    .map(|e| Self::from_ground_term_pattern(e, variables, dataset))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let mut constants = Vec::with_capacity(selectors.len());
+                for selector in &selectors {
+                    if let Self::Constant(c) = selector {
+                        constants.push(dataset.externalize_expression_term(c.clone())?);
+                    } else {
+                        return Ok(Self::Sequence(Rc::new(selectors)));
+                    }
+                }
+                Self::Constant(
+                    dataset.internalize_expression_term(ExpressionTerm::Sequence(constants))?,
+                )
+            }
+            GroundTermPattern::SequencePosition { element, position } => {
+                Self::SequencePosition(Rc::new(SequencePositionSelector {
+                    element: Self::from_ground_term_pattern(element, variables, dataset)?,
+                    position: match position {
+                        SequencePosition::Index(i) => PositionSelector::Index(
+                            usize::try_from(i.saturating_sub(1)).unwrap_or(usize::MAX),
+                        ),
+                        SequencePosition::Variable(v) => {
+                            PositionSelector::Variable(encode_variable(variables, v))
+                        }
+                        SequencePosition::Any => PositionSelector::Any,
+                    },
+                }))
+            }
         })
+    }
+
+    /// rdf-array: whether one value may match this selector in several ways (a position pattern with a variable or `*` position)
+    fn is_multi(&self) -> bool {
+        match self {
+            Self::Constant(_) | Self::Variable(_) => false,
+            #[cfg(feature = "sparql-12")]
+            Self::TriplePattern(t) => t.subject.is_multi() || t.object.is_multi(),
+            Self::Sequence(elements) => elements.iter().any(Self::is_multi),
+            Self::SequencePosition(p) => {
+                !matches!(p.position, PositionSelector::Index(_)) || p.element.is_multi()
+            }
+        }
     }
 
     fn from_named_node_pattern<'a>(
@@ -2835,21 +2915,10 @@ impl<T> TupleSelector<T> {
 }
 
 impl<T: Clone> TupleSelector<T> {
-    #[cfg_attr(
-        not(feature = "sparql-12"),
-        expect(
-            unused_lifetimes,
-            clippy::unnecessary_wraps,
-            clippy::extra_unused_lifetimes
-        )
-    )]
     fn get_pattern_value<'a>(
         &self,
         tuple: &InternalTuple<T>,
-        #[cfg(feature = "sparql-12")] dataset: &EvalDataset<
-            'a,
-            impl QueryableDataset<'a, InternalTerm = T>,
-        >,
+        dataset: &EvalDataset<'a, impl QueryableDataset<'a, InternalTerm = T>>,
     ) -> Result<Option<T>, QueryEvaluationError> {
         Ok(match self {
             Self::Constant(c) => Some(c.clone()),
@@ -2877,6 +2946,18 @@ impl<T: Clone> TupleSelector<T> {
                     )?,
                 )
             }
+            Self::Sequence(elements) => {
+                let mut terms = Vec::with_capacity(elements.len());
+                for element in elements.iter() {
+                    let Some(value) = element.get_pattern_value(tuple, dataset)? else {
+                        return Ok(None);
+                    };
+                    terms.push(dataset.externalize_expression_term(value)?);
+                }
+                Some(dataset.internalize_expression_term(ExpressionTerm::Sequence(terms))?)
+            }
+            // The sequence a position pattern matches is never known in advance
+            Self::SequencePosition(_) => None,
         })
     }
 }
@@ -2888,6 +2969,8 @@ impl<T: Clone> Clone for TupleSelector<T> {
             Self::Variable(v) => Self::Variable(*v),
             #[cfg(feature = "sparql-12")]
             Self::TriplePattern(t) => Self::TriplePattern(Rc::clone(t)),
+            Self::Sequence(t) => Self::Sequence(Rc::clone(t)),
+            Self::SequencePosition(t) => Self::SequencePosition(Rc::clone(t)),
         }
     }
 }
@@ -2899,12 +2982,11 @@ struct TripleTupleSelector<T> {
     object: TupleSelector<T>,
 }
 
-#[cfg_attr(not(feature = "sparql-12"), expect(clippy::unnecessary_wraps))]
 fn put_pattern_value<'a, D: QueryableDataset<'a>>(
     selector: &TupleSelector<D::InternalTerm>,
     value: D::InternalTerm,
     tuple: &mut InternalTuple<D::InternalTerm>,
-    #[cfg(feature = "sparql-12")] dataset: &EvalDataset<'a, D>,
+    dataset: &EvalDataset<'a, D>,
 ) -> Result<bool, QueryEvaluationError> {
     Ok(match selector {
         TupleSelector::Constant(c) => *c == value,
@@ -2938,7 +3020,123 @@ fn put_pattern_value<'a, D: QueryableDataset<'a>>(
                 dataset,
             )?
         }
+        TupleSelector::Sequence(selectors) => {
+            let ExpressionTerm::Sequence(values) = dataset.externalize_expression_term(value)?
+            else {
+                return Ok(false);
+            };
+            if values.len() != selectors.len() {
+                return Ok(false);
+            }
+            for (selector, value) in selectors.iter().zip(values) {
+                if !put_pattern_value(
+                    selector,
+                    dataset.internalize_expression_term(value)?,
+                    tuple,
+                    dataset,
+                )? {
+                    return Ok(false);
+                }
+            }
+            true
+        }
+        TupleSelector::SequencePosition(_) => {
+            let mut results = put_pattern_values(selector, value, tuple.clone(), dataset)?;
+            if results.len() > 1 {
+                return Err(QueryEvaluationError::UnsupportedSequencePattern(
+                    "a position pattern matching several positions is only supported in a basic graph pattern",
+                ));
+            }
+            if let Some(result) = results.pop() {
+                *tuple = result;
+                true
+            } else {
+                false
+            }
+        }
     })
+}
+
+/// rdf-array: every way the value matches the selector; a position pattern with a variable or `*` position matches each position.
+fn put_pattern_values<'a, D: QueryableDataset<'a>>(
+    selector: &TupleSelector<D::InternalTerm>,
+    value: D::InternalTerm,
+    tuple: InternalTuple<D::InternalTerm>,
+    dataset: &EvalDataset<'a, D>,
+) -> Result<Vec<InternalTuple<D::InternalTerm>>, QueryEvaluationError> {
+    match selector {
+        TupleSelector::SequencePosition(p) => {
+            let ExpressionTerm::Sequence(elements) = dataset.externalize_expression_term(value)?
+            else {
+                return Ok(Vec::new());
+            };
+            let mut results = Vec::new();
+            for (i, element) in elements.into_iter().enumerate() {
+                let mut tuple = tuple.clone();
+                match p.position {
+                    PositionSelector::Index(index) => {
+                        if i != index {
+                            continue;
+                        }
+                    }
+                    PositionSelector::Variable(v) => {
+                        let position = dataset.internalize_expression_term(
+                            ExpressionTerm::IntegerLiteral(Integer::from(
+                                i64::try_from(i + 1).map_err(|e| {
+                                    QueryEvaluationError::Unexpected(Box::new(e))
+                                })?,
+                            )),
+                        )?;
+                        if let Some(old) = tuple.get(v) {
+                            if *old != position {
+                                continue;
+                            }
+                        } else {
+                            tuple.set(v, position);
+                        }
+                    }
+                    PositionSelector::Any => (),
+                }
+                results.extend(put_pattern_values(
+                    &p.element,
+                    dataset.internalize_expression_term(element)?,
+                    tuple,
+                    dataset,
+                )?);
+            }
+            Ok(results)
+        }
+        TupleSelector::Sequence(selectors) if selector.is_multi() => {
+            let ExpressionTerm::Sequence(values) = dataset.externalize_expression_term(value)?
+            else {
+                return Ok(Vec::new());
+            };
+            if values.len() != selectors.len() {
+                return Ok(Vec::new());
+            }
+            let mut tuples = vec![tuple];
+            for (selector, value) in selectors.iter().zip(values) {
+                let value = dataset.internalize_expression_term(value)?;
+                let mut next = Vec::new();
+                for tuple in tuples {
+                    next.extend(put_pattern_values(selector, value.clone(), tuple, dataset)?);
+                }
+                tuples = next;
+                if tuples.is_empty() {
+                    break;
+                }
+            }
+            Ok(tuples)
+        }
+        _ => {
+            let mut tuple = tuple;
+            Ok(if put_pattern_value(selector, value, &mut tuple, dataset)? {
+                vec![tuple]
+            } else {
+                Vec::new()
+            })
+        }
+    }
 }
 
 pub fn are_compatible_and_not_disjointed<T: Clone + Eq>(
@@ -4060,10 +4258,11 @@ pub enum TripleTemplateValue {
     Variable(usize),
     #[cfg(feature = "sparql-12")]
     Triple(Box<TripleTemplate>),
+    /// rdf-array: a sequence with variables or blank nodes
+    Sequence(Vec<TripleTemplateValue>),
 }
 
 impl TripleTemplateValue {
-    #[cfg_attr(not(feature = "sparql-12"), expect(clippy::unnecessary_wraps))]
     fn from_term_or_variable(
         term_or_variable: &TermPattern,
         variables: &mut Vec<Variable>,
@@ -4102,6 +4301,23 @@ impl TripleTemplateValue {
                     }
                 }
             }
+            TermPattern::Sequence(elements) => {
+                let elements = elements
+                    .iter()
+                    .map(|e| Self::from_term_or_variable(e, variables, bnodes))
+                    .collect::<Option<Vec<_>>>()?;
+                let mut constants = Vec::with_capacity(elements.len());
+                for element in &elements {
+                    if let Self::Constant(c) = element {
+                        constants.push(c.clone());
+                    } else {
+                        return Some(Self::Sequence(elements));
+                    }
+                }
+                Self::Constant(Sequence::from(constants).into())
+            }
+            // The parser rejects position patterns in templates
+            TermPattern::SequencePosition { .. } => return None,
         })
     }
 
@@ -4148,6 +4364,13 @@ fn get_triple_template_value<'a, D: QueryableDataset<'a>>(
                 object: get_triple_template_value(&triple.object, tuple, bnodes, dataset)?,
             }
             .into(),
+        ),
+        TripleTemplateValue::Sequence(elements) => Some(
+            elements
+                .iter()
+                .map(|e| get_triple_template_value(e, tuple, bnodes, dataset))
+                .collect::<Option<Sequence>>()?
+                .into(),
         ),
     }
 }

@@ -158,6 +158,38 @@ fn write_csv_term<'a>(output: &mut String, term: impl Into<TermRef<'a>>) {
             output.push(' ');
             write_csv_term(output, &triple.object)
         }
+        // rdf-array: the sequence is one cell, its literals quoted, the cell CSV-escaped once
+        TermRef::Sequence(sequence) => {
+            let mut cell = String::new();
+            write_csv_sequence_element(&mut cell, sequence.into());
+            write_escaped_csv_string(output, &cell)
+        }
+    }
+}
+
+fn write_csv_sequence_element(output: &mut String, term: TermRef<'_>) {
+    match term {
+        TermRef::Literal(literal) => {
+            output.push('"');
+            for c in literal.value().chars() {
+                if matches!(c, '"' | '\\') {
+                    output.push('\\');
+                }
+                output.push(c);
+            }
+            output.push('"');
+        }
+        TermRef::Sequence(sequence) => {
+            output.push('(');
+            for (i, element) in sequence.iter().enumerate() {
+                if i > 0 {
+                    output.push(' ');
+                }
+                write_csv_sequence_element(output, element);
+            }
+            output.push(')');
+        }
+        term => write_csv_term(output, term),
     }
 }
 
@@ -342,6 +374,17 @@ fn write_tsv_term<'a>(output: &mut String, term: impl Into<TermRef<'a>>) {
             output.push(' ');
             write_tsv_term(output, &triple.object);
             output.push_str(" )>>");
+        }
+        // rdf-array: ( e1 e2 … )
+        TermRef::Sequence(sequence) => {
+            output.push('(');
+            for (i, element) in sequence.iter().enumerate() {
+                if i > 0 {
+                    output.push(' ');
+                }
+                write_tsv_term(output, element);
+            }
+            output.push(')');
         }
     }
 }

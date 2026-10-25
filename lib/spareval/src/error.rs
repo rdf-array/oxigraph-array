@@ -45,6 +45,9 @@ pub enum QueryEvaluationError {
     InvalidStorageTripleTerm,
     #[error("The SPARQL operation has been cancelled")]
     Cancelled,
+    /// rdf-array: a sequence pattern the evaluator does not support where it is used
+    #[error("rdf-array: {0}")]
+    UnsupportedSequencePattern(&'static str),
     #[doc(hidden)]
     #[error(transparent)]
     Unexpected(Box<dyn Error + Send + Sync>),

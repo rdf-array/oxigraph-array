@@ -9,7 +9,10 @@ use oxiri::{Iri, IriParseError};
 #[cfg(feature = "rdf-12")]
 use oxrdf::BaseDirection;
 use oxrdf::vocab::{rdf, xsd};
-use oxrdf::{BlankNode, GraphName, Literal, NamedNode, NamedNodeRef, NamedOrBlankNode, Quad};
+use oxrdf::{
+    BlankNode, GraphName, Literal, NamedNode, NamedNodeRef, NamedOrBlankNode, Quad, Sequence, Subject,
+    Term,
+};
 use std::error::Error;
 use std::fmt::Write;
 use std::io::Read;
@@ -893,7 +896,8 @@ enum JsonLdToRdfState {
         id: Option<NamedNode>,
         reverse: bool,
     },
-    List(Option<NamedOrBlankNode>),
+    /// rdf-array: the elements of a `@list` read so far, which becomes one sequence term
+    List(Vec<Term>),
     Graph(Option<GraphName>),
     Included,
 }
@@ -1035,7 +1039,7 @@ impl JsonLdToRdfConverter {
                 JsonLdEvent::EndProperty => (),
                 JsonLdEvent::StartList => {
                     self.state.push(state);
-                    self.state.push(JsonLdToRdfState::List(None));
+                    self.state.push(JsonLdToRdfState::List(Vec::new()));
                 }
                 JsonLdEvent::StartSet | JsonLdEvent::EndSet => {
                     self.state.push(state);
@@ -1050,9 +1054,9 @@ impl JsonLdToRdfConverter {
                 | JsonLdEvent::StartIncluded
                 | JsonLdEvent::EndIncluded => unreachable!(),
             },
-            JsonLdToRdfState::List(current_node) => match event {
+            JsonLdToRdfState::List(elements) => match event {
                 JsonLdEvent::StartObject => {
-                    self.add_new_list_node_state(current_node, results);
+                    self.state.push(JsonLdToRdfState::List(elements));
                     self.state.push(JsonLdToRdfState::StartObject {
                         buffer: Vec::new(),
                         nesting: 0,
@@ -1064,37 +1068,26 @@ impl JsonLdToRdfConverter {
                     language,
                     direction,
                 } => {
-                    self.add_new_list_node_state(current_node, results);
+                    self.state.push(JsonLdToRdfState::List(elements));
                     self.emit_quad_for_new_literal(
                         self.convert_literal(value, language, direction, r#type),
                         results,
                     )
                 }
                 JsonLdEvent::Json(value) => {
-                    self.add_new_list_node_state(current_node, results);
+                    self.state.push(JsonLdToRdfState::List(elements));
                     self.emit_quad_for_new_literal(Some(Self::convert_json(value)), results)
                 }
                 JsonLdEvent::StartList => {
-                    self.add_new_list_node_state(current_node, results);
-                    self.state.push(JsonLdToRdfState::List(None));
+                    self.state.push(JsonLdToRdfState::List(elements));
+                    self.state.push(JsonLdToRdfState::List(Vec::new()));
                 }
                 JsonLdEvent::EndList => {
-                    if let Some(previous_node) = current_node {
-                        if let Some(graph_name) = self.last_graph_name() {
-                            results.push(Quad::new(
-                                previous_node,
-                                rdf::REST,
-                                rdf::NIL.into_owned(),
-                                graph_name.clone(),
-                            ));
-                        }
-                    } else {
-                        self.emit_quads_for_new_object(Some(&rdf::NIL.into_owned().into()), results)
-                    }
+                    self.emit_quad_for_new_term(Sequence::from(elements).into(), results)
                 }
                 JsonLdEvent::StartSet | JsonLdEvent::EndSet => {
                     // TODO: this is bad
-                    self.state.push(JsonLdToRdfState::List(current_node));
+                    self.state.push(JsonLdToRdfState::List(elements));
                 }
                 JsonLdEvent::EndObject
                 | JsonLdEvent::StartProperty { .. }
@@ -1160,28 +1153,58 @@ impl JsonLdToRdfConverter {
         }
     }
 
-    fn emit_quads_for_new_object(&self, id: Option<&NamedOrBlankNode>, results: &mut Vec<Quad>) {
+    fn emit_quads_for_new_object(
+        &mut self,
+        id: Option<&NamedOrBlankNode>,
+        results: &mut Vec<Quad>,
+    ) {
         let Some(id) = id else {
             return;
         };
+        self.emit_quad_for_new_term(id.clone().into(), results)
+    }
+
+    /// Emits the quad whose object is a new node or sequence, or makes it the next element of the list being read.
+    fn emit_quad_for_new_term(&mut self, term: Term, results: &mut Vec<Quad>) {
+        // rdf-array: inside @list, the object is the list's next element
+        if let Some(JsonLdToRdfState::List(elements)) = self.state.last_mut() {
+            elements.push(term);
+            return;
+        }
         let Some(graph_name) = self.last_graph_name() else {
             return;
         };
         if let (Some(subject), Some((predicate, reverse))) =
             (self.last_subject(), self.last_predicate())
         {
-            results.push(if reverse {
-                Quad::new(id.clone(), predicate, subject.clone(), graph_name.clone())
+            if reverse {
+                if let Ok(term) = Subject::try_from(term) {
+                    results.push(Quad::new(
+                        term,
+                        predicate,
+                        subject.clone(),
+                        graph_name.clone(),
+                    ))
+                }
             } else {
-                Quad::new(subject.clone(), predicate, id.clone(), graph_name.clone())
-            })
+                results.push(Quad::new(
+                    subject.clone(),
+                    predicate,
+                    term,
+                    graph_name.clone(),
+                ))
+            }
         }
     }
 
-    fn emit_quad_for_new_literal(&self, literal: Option<Literal>, results: &mut Vec<Quad>) {
+    fn emit_quad_for_new_literal(&mut self, literal: Option<Literal>, results: &mut Vec<Quad>) {
         let Some(literal) = literal else {
             return;
         };
+        if let Some(JsonLdToRdfState::List(elements)) = self.state.last_mut() {
+            elements.push(literal.into());
+            return;
+        }
         let Some(graph_name) = self.last_graph_name() else {
             return;
         };
@@ -1200,28 +1223,6 @@ impl JsonLdToRdfConverter {
             literal,
             graph_name.clone(),
         ))
-    }
-
-    fn add_new_list_node_state(
-        &mut self,
-        current_node: Option<NamedOrBlankNode>,
-        results: &mut Vec<Quad>,
-    ) {
-        let new_node = BlankNode::default();
-        if let Some(previous_node) = current_node {
-            if let Some(graph_name) = self.last_graph_name() {
-                results.push(Quad::new(
-                    previous_node,
-                    rdf::REST,
-                    new_node.clone(),
-                    graph_name.clone(),
-                ));
-            }
-        } else {
-            self.emit_quads_for_new_object(Some(&new_node.clone().into()), results)
-        }
-        self.state
-            .push(JsonLdToRdfState::List(Some(new_node.into())));
     }
 
     fn convert_named_or_blank_node(&self, value: String) -> Option<NamedOrBlankNode> {
@@ -1350,7 +1351,7 @@ impl JsonLdToRdfConverter {
                     unreachable!()
                 }
                 JsonLdToRdfState::Property { .. } => (),
-                JsonLdToRdfState::List(id) => return id.as_ref(),
+                JsonLdToRdfState::List(_) => return None, // its elements are not quads
                 JsonLdToRdfState::Graph(_) | JsonLdToRdfState::Included => {
                     return None;
                 }
@@ -1366,7 +1367,7 @@ impl JsonLdToRdfConverter {
                     return Some((id.as_ref()?.as_ref(), *reverse));
                 }
                 JsonLdToRdfState::StartObject { .. } | JsonLdToRdfState::Object(_) => (),
-                JsonLdToRdfState::List(_) => return Some((rdf::FIRST, false)),
+                JsonLdToRdfState::List(_) => return None, // its elements are not quads
                 JsonLdToRdfState::Graph(_) | JsonLdToRdfState::Included => {
                     return None;
                 }

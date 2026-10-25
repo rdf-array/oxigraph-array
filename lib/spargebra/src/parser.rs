@@ -877,18 +877,50 @@ fn copy_graph(from: impl Into<GraphName>, to: impl Into<GraphNamePattern>) -> Gr
     }
 }
 
+/// rdf-array: true when the pattern is or holds a position pattern `((e))[i]`.
+fn has_sequence_position(pattern: &TermPattern) -> bool {
+    match pattern {
+        TermPattern::SequencePosition { .. } => true,
+        TermPattern::Sequence(elements) => elements.iter().any(has_sequence_position),
+        #[cfg(feature = "sparql-12")]
+        TermPattern::Triple(t) => has_sequence_position(&t.subject) || has_sequence_position(&t.object),
+        _ => false,
+    }
+}
+
 fn check_if_insert_data_are_sharing_blank_nodes(
     update: &[GraphUpdateOperation],
 ) -> Result<(), SparqlSyntaxError> {
-    #[cfg(feature = "sparql-12")]
-    fn add_triple_blank_nodes<'a>(triple: &'a Triple, bnodes: &mut HashSet<&'a BlankNode>) {
-        if let NamedOrBlankNode::BlankNode(bnode) = &triple.subject {
-            bnodes.insert(bnode);
+    // rdf-array: blank nodes nested in sequences and triple terms count too
+    fn add_term_blank_nodes<'a>(term: &'a Term, bnodes: &mut HashSet<&'a BlankNode>) {
+        match term {
+            Term::BlankNode(bnode) => {
+                bnodes.insert(bnode);
+            }
+            #[cfg(feature = "sparql-12")]
+            Term::Triple(triple) => {
+                add_subject_blank_nodes(&triple.subject, bnodes);
+                add_term_blank_nodes(&triple.object, bnodes);
+            }
+            Term::Sequence(sequence) => {
+                for element in sequence {
+                    add_term_blank_nodes(element, bnodes);
+                }
+            }
+            Term::NamedNode(_) | Term::Literal(_) => (),
         }
-        if let Term::BlankNode(bnode) = &triple.object {
-            bnodes.insert(bnode);
-        } else if let Term::Triple(triple) = &triple.object {
-            add_triple_blank_nodes(triple, bnodes);
+    }
+    fn add_subject_blank_nodes<'a>(subject: &'a Subject, bnodes: &mut HashSet<&'a BlankNode>) {
+        match subject {
+            Subject::BlankNode(bnode) => {
+                bnodes.insert(bnode);
+            }
+            Subject::Sequence(sequence) => {
+                for element in sequence {
+                    add_term_blank_nodes(element, bnodes);
+                }
+            }
+            Subject::NamedNode(_) => (),
         }
     }
 
@@ -907,16 +939,8 @@ fn check_if_insert_data_are_sharing_blank_nodes(
         if let GraphUpdateOperation::InsertData { data } = operation {
             let mut new_blank_nodes = HashSet::new();
             for quad in data {
-                if let NamedOrBlankNode::BlankNode(bnode) = &quad.subject {
-                    new_blank_nodes.insert(bnode);
-                }
-                if let Term::BlankNode(bnode) = &quad.object {
-                    new_blank_nodes.insert(bnode);
-                }
-                #[cfg(feature = "sparql-12")]
-                if let Term::Triple(triple) = &quad.object {
-                    add_triple_blank_nodes(triple, &mut new_blank_nodes);
-                }
+                add_subject_blank_nodes(&quad.subject, &mut new_blank_nodes);
+                add_term_blank_nodes(&quad.object, &mut new_blank_nodes);
             }
             if let Some(error) = existing_blank_nodes.intersection(&new_blank_nodes).next() {
                 return Err(SparqlSyntaxErrorKind::SharedBlankNode((**error).clone()).into());
@@ -1431,7 +1455,13 @@ parser! {
             / i("NAMED") { GraphTarget::NamedGraphs }
             / i("ALL") { GraphTarget::AllGraphs }
 
-        rule QuadPattern() -> Vec<QuadPattern> = "{" _ q:Quads() _ "}" { q }
+        rule QuadPattern() -> Vec<QuadPattern> = "{" _ q:Quads() _ "}" {?
+            if q.iter().any(|q| has_sequence_position(&q.subject) || has_sequence_position(&q.object)) {
+                Err("Sequence position patterns are not allowed in update templates")
+            } else {
+                Ok(q)
+            }
+        }
 
         rule QuadData() -> Vec<Quad> = "{" _ q:Quads() _ "}" {?
             q.into_iter().map(Quad::try_from).collect::<Result<Vec<_>, ()>>().map_err(|()| "Variables are not allowed in INSERT DATA")
@@ -1659,7 +1689,13 @@ parser! {
             NIL() { Vec::new() }
         rule ExpressionList_item() -> Expression = e:Expression() _ { e }
 
-        rule ConstructTemplate() -> Vec<TriplePattern> = "{" _ t:ConstructTriples() _ "}" { t }
+        rule ConstructTemplate() -> Vec<TriplePattern> = "{" _ t:ConstructTriples() _ "}" {?
+            if t.iter().any(|t| has_sequence_position(&t.subject) || has_sequence_position(&t.object)) {
+                Err("Sequence position patterns are not allowed in CONSTRUCT templates")
+            } else {
+                Ok(t)
+            }
+        }
 
         rule ConstructTriples() -> Vec<TriplePattern> = p:ConstructTriples_item() ** ("." _) "."? {
             p.into_iter().flatten().collect()
@@ -1885,7 +1921,21 @@ parser! {
             v:iri() { Either::Left(v) } /
             "a" { Either::Left(rdf::TYPE.into()) }
 
-        rule TriplesNode() -> FocusedTriplePattern<TermPattern> = Collection() / BlankNodePropertyList()
+        rule TriplesNode() -> FocusedTriplePattern<TermPattern> = SequencePositionPattern() / Collection() / BlankNodePropertyList()
+
+        // rdf-array: ((element))[position] matches a sequence with element at position
+        rule SequencePositionPattern() -> FocusedTriplePattern<TermPattern> = "(" _ "(" _ e:GraphNode() _ ")" _ ")" _ "[" _ i:SequencePositionIndex() _ "]" {
+            FocusedTriplePattern {
+                focus: TermPattern::SequencePosition { element: Box::new(e.focus), position: i },
+                patterns: e.patterns
+            }
+        }
+        rule SequencePositionIndex() -> SequencePosition =
+            v:Var() { SequencePosition::Variable(v) } /
+            "*" { SequencePosition::Any } /
+            i:$(['0'..='9']+) !['.' | 'e' | 'E'] {?
+                i.parse::<u64>().ok().filter(|i| *i > 0).map(SequencePosition::Index).ok_or("A sequence position is a positive integer")
+            }
 
         rule BlankNodePropertyList() -> FocusedTriplePattern<TermPattern> = "[" _ po:PropertyListNotEmpty() _ "]" {?
             let mut patterns = po.patterns;
@@ -1901,7 +1951,14 @@ parser! {
             })
         }
 
-        rule TriplesNodePath() -> FocusedTripleOrPathPattern<TermPattern> = CollectionPath() / BlankNodePropertyListPath()
+        rule TriplesNodePath() -> FocusedTripleOrPathPattern<TermPattern> = SequencePositionPatternPath() / CollectionPath() / BlankNodePropertyListPath()
+
+        rule SequencePositionPatternPath() -> FocusedTripleOrPathPattern<TermPattern> = "(" _ "(" _ e:GraphNodePath() _ ")" _ ")" _ "[" _ i:SequencePositionIndex() _ "]" {
+            FocusedTripleOrPathPattern {
+                focus: TermPattern::SequencePosition { element: Box::new(e.focus), position: i },
+                patterns: e.patterns
+            }
+        }
 
         rule BlankNodePropertyListPath() -> FocusedTripleOrPathPattern<TermPattern> = "[" _ po:PropertyListPathNotEmpty() _ "]" {?
             let mut patterns = po.patterns;
@@ -1917,18 +1974,16 @@ parser! {
             })
         }
 
+        // rdf-array: a collection is one sequence term
         rule Collection() -> FocusedTriplePattern<TermPattern> = "(" _ o:Collection_item()+ ")" {
             let mut patterns: Vec<TriplePattern> = Vec::new();
-            let mut current_list_node = TermPattern::from(rdf::NIL.into_owned());
-            for objWithPatterns in o.into_iter().rev() {
-                let new_blank_node = TermPattern::from(BlankNode::default());
-                patterns.push(TriplePattern::new(new_blank_node.clone(), rdf::FIRST.into_owned(), objWithPatterns.focus.clone()));
-                patterns.push(TriplePattern::new(new_blank_node.clone(), rdf::REST.into_owned(), current_list_node));
-                current_list_node = new_blank_node;
-                patterns.extend_from_slice(&objWithPatterns.patterns);
+            let mut elements = Vec::with_capacity(o.len());
+            for objWithPatterns in o {
+                elements.push(objWithPatterns.focus);
+                patterns.extend(objWithPatterns.patterns);
             }
             FocusedTriplePattern {
-                focus: current_list_node,
+                focus: TermPattern::Sequence(elements),
                 patterns
             }
         }
@@ -1936,16 +1991,13 @@ parser! {
 
         rule CollectionPath() -> FocusedTripleOrPathPattern<TermPattern> = "(" _ o:CollectionPath_item()+ _ ")" {
             let mut patterns: Vec<TripleOrPathPattern> = Vec::new();
-            let mut current_list_node = TermPattern::from(rdf::NIL.into_owned());
-            for objWithPatterns in o.into_iter().rev() {
-                let new_blank_node = TermPattern::from(BlankNode::default());
-                patterns.push(TriplePattern::new(new_blank_node.clone(), rdf::FIRST.into_owned(), objWithPatterns.focus.clone()).into());
-                patterns.push(TriplePattern::new(new_blank_node.clone(), rdf::REST.into_owned(), current_list_node).into());
-                current_list_node = new_blank_node;
+            let mut elements = Vec::with_capacity(o.len());
+            for objWithPatterns in o {
+                elements.push(objWithPatterns.focus);
                 patterns.extend(objWithPatterns.patterns);
             }
             FocusedTripleOrPathPattern {
-                focus: current_list_node,
+                focus: TermPattern::Sequence(elements),
                 patterns
             }
         }
@@ -1962,7 +2014,7 @@ parser! {
             l:NumericLiteral() { l.into() } /
             l:BooleanLiteral() { l.into() } /
             b:BlankNode() { b.into() } /
-            NIL() { rdf::NIL.into_owned().into() }
+            NIL() { TermPattern::Sequence(Vec::new()) }
 
         rule AnnotationPath() -> FocusedTripleOrPathPattern<Vec<TermPattern>> = a:AnnotationPath_e()* {
             let mut output: FocusedTripleOrPathPattern<Vec<TermPattern>> = FocusedTripleOrPathPattern::new(Vec::new());
@@ -2196,7 +2248,12 @@ parser! {
             None => e,
         } }
 
-        rule PrimaryExpression() -> Expression =
+        // rdf-array: expr[i] is the element at a 1-based position
+        rule PrimaryExpression() -> Expression = e:PrimaryExpression_inner() i:(_ "[" _ i:Expression() _ "]" { i })* {
+            i.into_iter().fold(e, |e, i| Expression::FunctionCall(Function::SequenceIndex, vec![e, i]))
+        }
+
+        rule PrimaryExpression_inner() -> Expression =
             BrackettedExpression() /
             ExprTripleTerm() /
             iriOrFunction() /
@@ -2280,6 +2337,9 @@ parser! {
             i("STRDT") _ "(" _ a:Expression() _ "," _ b:Expression() _ ")" { Expression::FunctionCall(Function::StrDt, vec![a, b]) } /
             i("sameTerm") _ "(" _ a:Expression() _ "," _ b:Expression() _ ")" { Expression::SameTerm(Box::new(a), Box::new(b)) } /
             (i("isIRI") / i("isURI")) _ "(" _ e:Expression() _ ")" { Expression::FunctionCall(Function::IsIri, vec![e]) } /
+            i("isSEQ") _ "(" _ e:Expression() _ ")" { Expression::FunctionCall(Function::IsSequence, vec![e]) } /
+            i("SEQLEN") _ "(" _ e:Expression() _ ")" { Expression::FunctionCall(Function::SequenceLength, vec![e]) } /
+            i("SEQ") _ e:ExpressionList() { Expression::FunctionCall(Function::Sequence, e) } /
             i("isBLANK") _ "(" _ e:Expression() _ ")" { Expression::FunctionCall(Function::IsBlank, vec![e]) } /
             i("isLITERAL") _ "(" _ e:Expression() _ ")" { Expression::FunctionCall(Function::IsLiteral, vec![e]) } /
             i("isNUMERIC") _ "(" _ e:Expression() _ ")" { Expression::FunctionCall(Function::IsNumeric, vec![e]) } /

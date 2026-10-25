@@ -3,7 +3,7 @@ use crate::BaseDirection;
 use crate::vocab::xsd;
 use crate::{
     BlankNode, BlankNodeIdParseError, GraphName, IriParseError, LanguageTagParseError, Literal,
-    NamedNode, Quad, Term, Triple, Variable, VariableNameParseError,
+    NamedNode, Quad, Sequence, Term, Triple, Variable, VariableNameParseError,
 };
 use std::borrow::Cow;
 use std::char;
@@ -216,6 +216,11 @@ impl FromStr for Quad {
             Term::Triple(_) => {
                 return Err(TermParseError::msg(
                     "Triple terms are not allowed in graph name position",
+                ));
+            }
+            Term::Sequence(_) => {
+                return Err(TermParseError::msg(
+                    "Sequences are not allowed in graph name position",
                 ));
             }
         }))
@@ -513,6 +518,21 @@ fn read_term(s: &str, number_of_recursive_calls: usize) -> Result<(Term, &str), 
         {
             Err(TermParseError::msg("RDF 1.2 is not supported"))
         }
+    } else if let Some(remain) = s.strip_prefix('(') {
+        // rdf-array: a sequence ( e1 e2 ... )
+        let mut elements = Vec::new();
+        let mut remain = remain.trim_start();
+        loop {
+            if let Some(r) = remain.strip_prefix(')') {
+                return Ok((Sequence::from(elements).into(), r));
+            }
+            if remain.is_empty() {
+                return Err(TermParseError::msg("A sequence must end with )"));
+            }
+            let (element, r) = read_term(remain, number_of_recursive_calls + 1)?;
+            elements.push(element);
+            remain = r.trim_start();
+        }
     } else if s.starts_with('<') {
         let (term, remain) = read_named_node(s)?;
         Ok((term.into(), remain))
@@ -538,6 +558,7 @@ fn read_triple(
             subject: match subject {
                 Term::NamedNode(s) => s.into(),
                 Term::BlankNode(s) => s.into(),
+                Term::Sequence(s) => s.into(),
                 Term::Literal(_) => {
                     return Err(TermParseError::msg(
                         "Literals are not allowed in subject position",
